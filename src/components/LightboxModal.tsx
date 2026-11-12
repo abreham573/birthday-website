@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useCallback } from 'react';
 import { X, ChevronLeft, ChevronRight, Trash2 } from 'lucide-react';
 import { MemoryItem } from '../types';
 
@@ -17,30 +17,34 @@ export const LightboxModal: React.FC<LightboxModalProps> = ({
   onSelect,
   onDelete,
 }) => {
-  if (!item) return null;
-
-  const currentIndex = items.findIndex((i) => i.id === item.id);
+  const currentIndex = item ? items.findIndex((i) => i.id === item.id) : -1;
   const hasPrev = currentIndex > 0;
-  const hasNext = currentIndex < items.length - 1;
+  const hasNext = currentIndex >= 0 && currentIndex < items.length - 1;
 
-  const handlePrev = () => {
+  const handlePrev = useCallback(() => {
     if (hasPrev) onSelect(items[currentIndex - 1]);
-  };
+  }, [hasPrev, currentIndex, items, onSelect]);
 
-  const handleNext = () => {
+  const handleNext = useCallback(() => {
     if (hasNext) onSelect(items[currentIndex + 1]);
-  };
+  }, [hasNext, currentIndex, items, onSelect]);
 
-  // Keyboard navigation
+  // Keyboard navigation hook called unconditionally
   useEffect(() => {
+    if (!item) return;
+
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();
       if (e.key === 'ArrowLeft') handlePrev();
       if (e.key === 'ArrowRight') handleNext();
     };
+
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [currentIndex, hasPrev, hasNext]);
+  }, [item, handlePrev, handleNext, onClose]);
+
+  // Early return only after all hooks are declared
+  if (!item) return null;
 
   return (
     <div

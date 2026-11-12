@@ -89,48 +89,58 @@ async function startServer() {
   });
 
   // POST /api/upload: multipart form-data upload for photos and videos from device
-  app.post('/api/upload', upload.array('files', 25), (req, res) => {
-    try {
-      const files = req.files as Express.Multer.File[] | undefined;
-      if (!files || files.length === 0) {
-        return res.status(400).json({ success: false, error: 'No files uploaded' });
+  app.post('/api/upload', (req, res) => {
+    upload.any()(req, res, (err) => {
+      if (err) {
+        console.error('Upload middleware error:', err);
+        return res.status(400).json({
+          success: false,
+          error: err instanceof Error ? err.message : 'File upload failed',
+        });
       }
 
-      const title = (req.body.title as string) || '';
-      const caption = (req.body.caption as string) || '';
-      const date = (req.body.date as string) || 'Special Moment';
-      const tag = (req.body.tag as string) || 'Birthday Special';
-      const mediaType = (req.body.mediaType as 'photo' | 'video') || 'photo';
+      try {
+        const files = req.files as Express.Multer.File[] | undefined;
+        if (!files || files.length === 0) {
+          return res.status(400).json({ success: false, error: 'No files were uploaded' });
+        }
 
-      const newItems: ServerMemoryItem[] = files.map((file, idx) => {
-        const isVideo = file.mimetype.startsWith('video/') || mediaType === 'video';
-        const fileUrl = `/uploads/${file.filename}`;
-        const itemTitle = files.length === 1 
-          ? (title.trim() || 'My Beautiful Tsi ❤️')
-          : (title.trim() ? `${title.trim()} (${idx + 1})` : `Tsi Memory #${idx + 1}`);
+        const title = (req.body.title as string) || '';
+        const caption = (req.body.caption as string) || '';
+        const date = (req.body.date as string) || 'Special Moment';
+        const tag = (req.body.tag as string) || 'Birthday Special';
+        const mediaType = (req.body.mediaType as 'photo' | 'video') || 'photo';
 
-        return {
-          id: `tsi-memory-${Date.now()}-${idx}`,
-          type: isVideo ? 'video' : 'photo',
-          url: fileUrl,
-          title: itemTitle,
-          caption: caption.trim() || 'A cherished memory of my love, Tsi.',
-          date: date.trim() || 'Special Memory',
-          tag: tag.trim() || 'Birthday Special',
-          aspectRatio: isVideo ? '16:9' : '4:3',
-          isCustom: true,
-        };
-      });
+        const newItems: ServerMemoryItem[] = files.map((file, idx) => {
+          const isVideo = file.mimetype.startsWith('video/') || mediaType === 'video';
+          const fileUrl = `/uploads/${file.filename}`;
+          const itemTitle = files.length === 1 
+            ? (title.trim() || 'My Beautiful Tsi ❤️')
+            : (title.trim() ? `${title.trim()} (${idx + 1})` : `Tsi Memory #${idx + 1}`);
 
-      const existing = getSavedMemories();
-      const updated = [...newItems, ...existing];
-      saveMemories(updated);
+          return {
+            id: `tsi-memory-${Date.now()}-${idx}`,
+            type: isVideo ? 'video' : 'photo',
+            url: fileUrl,
+            title: itemTitle,
+            caption: caption.trim() || 'A cherished memory of my love, Tsi.',
+            date: date.trim() || 'Special Memory',
+            tag: tag.trim() || 'Birthday Special',
+            aspectRatio: isVideo ? '16:9' : '4:3',
+            isCustom: true,
+          };
+        });
 
-      res.json({ success: true, newItems, total: updated.length });
-    } catch (err) {
-      console.error('Failed to process upload:', err);
-      res.status(500).json({ success: false, error: 'Upload failed' });
-    }
+        const existing = getSavedMemories();
+        const updated = [...newItems, ...existing];
+        saveMemories(updated);
+
+        res.json({ success: true, newItems, total: updated.length });
+      } catch (innerErr) {
+        console.error('Failed to process upload:', innerErr);
+        res.status(500).json({ success: false, error: 'Upload failed' });
+      }
+    });
   });
 
   // POST /api/memories: directly add a memory item (e.g. from URL)
