@@ -1,0 +1,6 @@
+{
+  "name": "Tsi's Birthday Love Story",
+  "description": "A romantic birthday celebration for Tsi featuring cherished photos and videos, a heartfelt love letter with interactive heart sparks, and Austin Mahone's All I Ever Need.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,90 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --font-serif: 'Cormorant Garamond', Georgia, serif;
+    --font-handwriting: 'Alex Brush', cursive;
+    --font-sans: 'Plus Jakarta Sans', system-ui, sans-serif;
+  }
+
+  body {
+    font-family: var(--font-sans);
+    background-color: #120205;
+    color: #ffe4e6;
+    overflow-x: hidden;
+  }
+}
+
+.font-serif-cormorant {
+  font-family: 'Cormorant Garamond', Georgia, serif;
+}
+
+.font-handwriting {
+  font-family: 'Alex Brush', cursive;
+}
+
+/* Custom romantic glowing animations */
+@keyframes romanticFloat {
+  0%, 100% {
+    transform: translateY(0px) rotate(0deg);
+  }
+  50% {
+    transform: translateY(-10px) rotate(2deg);
+  }
+}
+
+@keyframes gentlePulse {
+  0%, 100% {
+    opacity: 0.6;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.9;
+    transform: scale(1.04);
+  }
+}
+
+@keyframes spinSlow {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.animate-spin-slow {
+  animation: spinSlow 18s linear infinite;
+}
+
+.animate-float {
+  animation: romanticFloat 5s ease-in-out infinite;
+}
+
+.animate-pulse-gentle {
+  animation: gentlePulse 4s ease-in-out infinite;
+}
+
+/* Glassmorphism romantic surface */
+.romantic-card {
+  background: rgba(36, 6, 14, 0.65);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(244, 63, 94, 0.18);
+  box-shadow: 0 20px 50px -10px rgba(76, 5, 25, 0.45);
+}
+
+.romantic-card-hover {
+  transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.romantic-card-hover:hover {
+  border-color: rgba(251, 113, 133, 0.35);
+  box-shadow: 0 25px 60px -10px rgba(159, 18, 57, 0.55);
+}
+
+/* Letter parchment styling */
+.parchment-paper {
+  background: radial-gradient(circle at 50% 10%, #fffbf8 0%, #faeee7 60%, #eedcd3 100%);
+  color: #381219;
+  box-shadow: 0 25px 60px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(159, 18, 57, 0.15);
+}
