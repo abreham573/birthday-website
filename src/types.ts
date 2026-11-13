@@ -11,6 +11,7 @@ export interface MemoryItem {
   tag: string;
   aspectRatio?: '4:3' | '16:9' | '1:1' | '9:16';
   isCustom?: boolean;
+  isChunked?: boolean;
 }
 
 export interface LoveLetterData {

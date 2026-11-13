@@ -1,5 +1,5 @@
-import React, { useEffect, useCallback } from 'react';
-import { X, ChevronLeft, ChevronRight, Trash2 } from 'lucide-react';
+import React, { useEffect, useCallback, useState } from 'react';
+import { X, ChevronLeft, ChevronRight, Trash2, Loader2 } from 'lucide-react';
 import { MemoryItem } from '../types';
 
 interface LightboxModalProps {
@@ -9,6 +9,7 @@ interface LightboxModalProps {
   onClose: () => void;
   onSelect: (item: MemoryItem) => void;
   onDelete?: (id: string) => void;
+  onResolveMedia?: (id: string) => Promise<string>;
 }
 
 export const LightboxModal: React.FC<LightboxModalProps> = ({
@@ -18,7 +19,11 @@ export const LightboxModal: React.FC<LightboxModalProps> = ({
   onClose,
   onSelect,
   onDelete,
+  onResolveMedia,
 }) => {
+  const [loadingMedia, setLoadingMedia] = useState(false);
+  const [mediaError, setMediaError] = useState<string | null>(null);
+
   const currentIndex = item ? items.findIndex((i) => i.id === item.id) : -1;
   const hasPrev = currentIndex > 0;
   const hasNext = currentIndex >= 0 && currentIndex < items.length - 1;
@@ -30,6 +35,43 @@ export const LightboxModal: React.FC<LightboxModalProps> = ({
   const handleNext = useCallback(() => {
     if (hasNext) onSelect(items[currentIndex + 1]);
   }, [hasNext, currentIndex, items, onSelect]);
+
+  // Lazy-load chunked media only when opened
+  useEffect(() => {
+    if (!item || item.url || !item.isChunked || !onResolveMedia) {
+      setLoadingMedia(false);
+      setMediaError(null);
+      return;
+    }
+
+    let cancelled = false;
+    setLoadingMedia(true);
+    setMediaError(null);
+
+    onResolveMedia(item.id)
+      .then((resolvedUrl) => {
+        if (!cancelled && !resolvedUrl) {
+          setMediaError('Video could not be loaded right now.');
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          const msg = err instanceof Error ? err.message : String(err);
+          if (msg.toLowerCase().includes('quota')) {
+            setMediaError('Daily free database read limit reached. Please try again tomorrow or upgrade the Firebase plan.');
+          } else {
+            setMediaError('Could not load video right now.');
+          }
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingMedia(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [item?.id, item?.url, item?.isChunked, onResolveMedia]);
 
   // Keyboard navigation hook called unconditionally
   useEffect(() => {
@@ -88,7 +130,16 @@ export const LightboxModal: React.FC<LightboxModalProps> = ({
       <div className="relative max-w-4xl w-full max-h-[92vh] flex flex-col bg-[#1c0207] border border-rose-500/20 rounded-3xl overflow-hidden shadow-2xl">
         {/* Media Container */}
         <div className="relative flex-1 bg-black/40 flex items-center justify-center min-h-[300px] max-h-[60vh] sm:max-h-[65vh] overflow-hidden">
-          {item.type === 'photo' ? (
+          {loadingMedia ? (
+            <div className="flex flex-col items-center gap-3 p-8 text-rose-200/80">
+              <Loader2 className="w-8 h-8 animate-spin text-rose-400" />
+              <span className="text-xs">Loading memory...</span>
+            </div>
+          ) : mediaError ? (
+            <div className="p-8 text-center max-w-md">
+              <p className="text-sm text-rose-200">{mediaError}</p>
+            </div>
+          ) : item.type === 'photo' ? (
             <img
               src={item.url}
               alt={item.title}

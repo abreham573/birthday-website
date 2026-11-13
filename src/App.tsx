@@ -3,9 +3,9 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { onAuthStateChanged, User } from 'firebase/auth';
-import { Lock } from 'lucide-react';
+import { Lock, AlertTriangle, ExternalLink } from 'lucide-react';
 import { TabType, MemoryItem, LoveLetterData } from './types';
 import { INITIAL_MEMORIES } from './data/initialMemories';
 import { DEFAULT_LOVE_LETTER } from './data/defaultLetter';
@@ -20,6 +20,10 @@ import {
   deleteMemoryFromFirestore,
   fetchLetterFromFirestore,
   saveLetterToFirestore,
+  resolveChunkedMemoryUrl,
+  getCachedMemoriesFallback,
+  getCachedLetterFallback,
+  isQuotaExceededError,
 } from './lib/memoriesService';
 import { BackgroundEffects } from './components/BackgroundEffects';
 import { Navbar } from './components/Navbar';
@@ -45,6 +49,7 @@ export default function App() {
 
   // Cloud-synced Love Letter state
   const [letterData, setLetterData] = useState<LoveLetterData>(DEFAULT_LOVE_LETTER);
+  const [quotaExceeded, setQuotaExceeded] = useState<boolean>(false);
 
   // Modals
   const [isAddModalOpen, setIsAddModalOpen] = useState<boolean>(false);
@@ -66,25 +71,35 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
-  // Fetch cloud-persisted memories & love letter on mount so Tsi sees everything on any device
+  // Fetch cloud-persisted memories & love letter on mount (with IndexedDB fallback on quota limit)
   useEffect(() => {
     let active = true;
 
     async function loadCloudData() {
+      let hitQuota = false;
       try {
         const [cloudMemories, cloudLetter] = await Promise.all([
-          fetchMemoriesFromFirestore().catch((err) => {
+          fetchMemoriesFromFirestore().catch(async (err) => {
+            if (isQuotaExceededError(err)) {
+              hitQuota = true;
+            }
             console.error('Failed to load memories from Firestore:', err);
-            return [] as MemoryItem[];
+            return await getCachedMemoriesFallback();
           }),
-          fetchLetterFromFirestore().catch((err) => {
+          fetchLetterFromFirestore().catch(async (err) => {
+            if (isQuotaExceededError(err)) {
+              hitQuota = true;
+            }
             console.error('Failed to load letter from Firestore:', err);
-            return null;
+            return await getCachedLetterFallback();
           }),
         ]);
 
         if (!active) return;
 
+        if (hitQuota) {
+          setQuotaExceeded(true);
+        }
         if (cloudMemories.length > 0) {
           setMemories(cloudMemories);
         }
@@ -103,6 +118,19 @@ export default function App() {
     return () => {
       active = false;
     };
+  }, []);
+
+  const handleResolveMedia = useCallback(async (id: string): Promise<string> => {
+    const resolvedUrl = await resolveChunkedMemoryUrl(id);
+    if (resolvedUrl) {
+      setMemories((prev) =>
+        prev.map((m) => (m.id === id ? { ...m, url: resolvedUrl } : m))
+      );
+      setSelectedLightboxItem((prev) =>
+        prev && prev.id === id ? { ...prev, url: resolvedUrl } : prev
+      );
+    }
+    return resolvedUrl;
   }, []);
 
   const handleSignInOwner = async () => {
@@ -174,6 +202,35 @@ export default function App() {
 
       {/* Main Pages: 1. Photos & Videos, 2. Love Letter, 3. Our Song */}
       <main className="relative z-10">
+        {quotaExceeded && (
+          <div className="max-w-4xl mx-auto px-4 sm:px-6 pt-4">
+            <div className="rounded-2xl bg-amber-950/70 border border-amber-500/35 p-4 text-xs text-amber-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3 backdrop-blur-md">
+              <div className="flex items-start gap-2.5">
+                <AlertTriangle className="w-4 h-4 text-amber-300 shrink-0 mt-0.5" />
+                <div>
+                  <p className="font-semibold text-amber-200">
+                    Daily free Firestore read limit reached
+                  </p>
+                  <p className="text-amber-100/80 mt-0.5 leading-relaxed">
+                    Free daily database read units reset tomorrow. Cached items on this device still load offline, or you can upgrade your database quota in Firebase Console.
+                  </p>
+                </div>
+              </div>
+              {isOwner && (
+                <a
+                  href="https://console.firebase.google.com/project/gen-lang-client-0717726151/firestore/databases/ai-studio-birthdaywebsite-b4d31af1-dbb6-455d-ae64-69fcad2dc0d4/data?openUpgradeDialog=true"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 border border-amber-400/40 text-amber-100 font-semibold whitespace-nowrap shrink-0 transition-colors"
+                >
+                  <span>Upgrade Database</span>
+                  <ExternalLink className="w-3.5 h-3.5" />
+                </a>
+              )}
+            </div>
+          </div>
+        )}
+
         {activeTab === 'memories' && (
           <MemoriesPage
             memories={memories}
@@ -218,6 +275,7 @@ export default function App() {
         onClose={() => setSelectedLightboxItem(null)}
         onSelect={(item) => setSelectedLightboxItem(item)}
         onDelete={handleDeleteMemory}
+        onResolveMedia={handleResolveMedia}
       />
 
       {/* Add Photo or Video Modal */}

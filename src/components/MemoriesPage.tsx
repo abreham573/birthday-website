@@ -203,7 +203,7 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
                         referrerPolicy="no-referrer"
                         className="w-full h-full object-cover"
                       />
-                    ) : (
+                    ) : item.url ? (
                       <video
                         src={item.url}
                         preload="metadata"
@@ -211,6 +211,12 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
                         playsInline
                         className="w-full h-full object-cover"
                       />
+                    ) : (
+                      <div className="w-full h-full bg-gradient-to-br from-[#3b0512] via-[#24030a] to-[#120105] flex flex-col items-center justify-center p-4 text-center">
+                        <span className="text-[11px] uppercase tracking-widest text-rose-300/70 font-medium mt-14">
+                          Tap to Play Video
+                        </span>
+                      </div>
                     )}
                     {/* Play video badge overlay */}
                     <div className="absolute inset-0 bg-black/35 flex items-center justify-center group-hover:bg-black/20 transition-colors">

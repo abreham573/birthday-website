@@ -12,11 +12,30 @@ import {
   writeBatch,
 } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from './firebase';
+import {
+  deleteCachedMediaBlob,
+  getCachedLetter,
+  getCachedMediaBlob,
+  getCachedMemoriesList,
+  saveCachedLetter,
+  saveCachedMediaBlob,
+  saveCachedMemoriesList,
+} from './mediaCache';
 import { LoveLetterData, MemoryItem } from '../types';
 
 const CHUNK_SIZE = 650000;
 const MAX_CHUNKS = 40;
 const MAX_VIDEO_BYTES = 18 * 1024 * 1024; // ~18MB max video (~24MB base64 <= 40 chunks)
+
+export function isQuotaExceededError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  const lower = msg.toLowerCase();
+  return (
+    lower.includes('quota exceeded') ||
+    lower.includes('quota limit exceeded') ||
+    lower.includes('resource-exhausted')
+  );
+}
 
 function sanitizeId(raw: string): string {
   return raw.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 100);
@@ -105,11 +124,11 @@ async function compressImageFile(file: File): Promise<{ dataUrl: string; mimeTyp
   });
 }
 
-function dataUrlToBlobUrl(dataUrl: string): string {
+function dataUrlToBlob(dataUrl: string): Blob | null {
   try {
-    if (!dataUrl.startsWith('data:')) return dataUrl;
+    if (!dataUrl.startsWith('data:')) return null;
     const parts = dataUrl.split(',');
-    if (parts.length < 2) return dataUrl;
+    if (parts.length < 2) return null;
     const mimeMatch = parts[0].match(/:(.*?);/);
     const mime = mimeMatch ? mimeMatch[1] : 'application/octet-stream';
     const bstr = atob(parts[1]);
@@ -118,10 +137,9 @@ function dataUrlToBlobUrl(dataUrl: string): string {
     while (n--) {
       u8arr[n] = bstr.charCodeAt(n);
     }
-    const blob = new Blob([u8arr], { type: mime });
-    return URL.createObjectURL(blob);
+    return new Blob([u8arr], { type: mime });
   } catch {
-    return dataUrl;
+    return null;
   }
 }
 
@@ -203,6 +221,7 @@ export async function uploadMemoryFileToFirestore(params: {
       tag: safeTag,
       aspectRatio,
       isCustom: true,
+      isChunked: false,
     };
   }
 
@@ -251,9 +270,15 @@ export async function uploadMemoryFileToFirestore(params: {
     handleFirestoreError(error, OperationType.WRITE, `memories/${memoryId}`);
   }
 
+  // Cache chunked blob locally right away so uploader never re-reads chunks
+  const blob = dataUrlToBlob(dataUrl);
+  if (blob) {
+    await saveCachedMediaBlob(memoryId, blob);
+  }
+
   onProgress?.(100);
 
-  const playableUrl = mediaType === 'video' ? dataUrlToBlobUrl(dataUrl) : dataUrl;
+  const playableUrl = blob ? URL.createObjectURL(blob) : dataUrl;
   return {
     id: memoryId,
     type: mediaType,
@@ -264,6 +289,7 @@ export async function uploadMemoryFileToFirestore(params: {
     tag: safeTag,
     aspectRatio,
     isCustom: true,
+    isChunked: true,
   };
 }
 
@@ -318,7 +344,39 @@ export async function saveMemoryUrlToFirestore(params: {
     tag: safeTag,
     aspectRatio,
     isCustom: true,
+    isChunked: false,
   };
+}
+
+export async function resolveChunkedMemoryUrl(memoryId: string): Promise<string> {
+  // 1. Check local IndexedDB cache first (0 Firestore reads!)
+  const cachedBlob = await getCachedMediaBlob(memoryId);
+  if (cachedBlob) {
+    return URL.createObjectURL(cachedBlob);
+  }
+
+  // 2. Fetch immutable chunks from Firestore once and cache locally
+  const chunksPath = `memories/${memoryId}/chunks`;
+  try {
+    const chunksQuery = query(
+      collection(db, 'memories', memoryId, 'chunks'),
+      orderBy('index', 'asc')
+    );
+    const chunksSnap = await getDocs(chunksQuery);
+    const fullDataUrl = chunksSnap.docs
+      .map((c) => c.data().data as string)
+      .join('');
+    if (!fullDataUrl) return '';
+
+    const blob = dataUrlToBlob(fullDataUrl);
+    if (blob) {
+      await saveCachedMediaBlob(memoryId, blob);
+      return URL.createObjectURL(blob);
+    }
+    return fullDataUrl;
+  } catch (chunkErr) {
+    handleFirestoreError(chunkErr, OperationType.LIST, chunksPath);
+  }
 }
 
 export async function fetchMemoriesFromFirestore(): Promise<MemoryItem[]> {
@@ -331,50 +389,64 @@ export async function fetchMemoriesFromFirestore(): Promise<MemoryItem[]> {
     );
     const snapshot = await getDocs(q);
 
-    const items = await Promise.all(
-      snapshot.docs.map(async (docSnap) => {
-        const data = docSnap.data();
-        let resolvedUrl: string = typeof data.url === 'string' ? data.url : '';
+    const items: MemoryItem[] = [];
 
-        if (data.isChunked) {
-          try {
-            const chunksQuery = query(
-              collection(db, 'memories', docSnap.id, 'chunks'),
-              orderBy('index', 'asc')
-            );
-            const chunksSnap = await getDocs(chunksQuery);
-            const fullDataUrl = chunksSnap.docs
-              .map((c) => c.data().data as string)
-              .join('');
-            resolvedUrl =
-              data.type === 'video' ? dataUrlToBlobUrl(fullDataUrl) : fullDataUrl;
-          } catch (chunkErr) {
-            handleFirestoreError(
-              chunkErr,
-              OperationType.LIST,
-              `memories/${docSnap.id}/chunks`
-            );
-          }
+    for (const docSnap of snapshot.docs) {
+      const data = docSnap.data();
+      const mediaType: 'photo' | 'video' = data.type === 'video' ? 'video' : 'photo';
+      const isChunked = Boolean(data.isChunked);
+      let resolvedUrl: string = typeof data.url === 'string' ? data.url : '';
+
+      if (isChunked) {
+        // Always check local IndexedDB cache first to avoid Firestore chunk reads
+        const cachedBlob = await getCachedMediaBlob(docSnap.id);
+        if (cachedBlob) {
+          resolvedUrl = URL.createObjectURL(cachedBlob);
+        } else if (mediaType === 'photo') {
+          // Photos need thumbnails on gallery load; videos lazy-load on click in Lightbox
+          resolvedUrl = await resolveChunkedMemoryUrl(docSnap.id);
         }
+      }
 
-        return {
+      if (resolvedUrl || (isChunked && mediaType === 'video')) {
+        items.push({
           id: docSnap.id,
-          type: data.type === 'video' ? 'video' : 'photo',
+          type: mediaType,
           url: resolvedUrl,
           title: data.title || 'Tsi Memory',
           caption: data.caption || '',
           date: data.date || 'Special Moment',
           tag: data.tag || 'Birthday Special',
-          aspectRatio: data.aspectRatio || (data.type === 'video' ? '16:9' : '4:3'),
+          aspectRatio: data.aspectRatio || (mediaType === 'video' ? '16:9' : '4:3'),
           isCustom: true,
-        } as MemoryItem;
-      })
-    );
+          isChunked,
+        });
+      }
+    }
 
-    return items.filter((item) => Boolean(item.url));
+    // Save lightweight metadata fallback in IndexedDB
+    await saveCachedMemoriesList(items);
+    return items;
   } catch (error) {
     handleFirestoreError(error, OperationType.LIST, path);
   }
+}
+
+export async function getCachedMemoriesFallback(): Promise<MemoryItem[]> {
+  const cached = await getCachedMemoriesList();
+  if (!cached || cached.length === 0) return [];
+
+  return Promise.all(
+    cached.map(async (item) => {
+      if (!item.url && item.isChunked) {
+        const cachedBlob = await getCachedMediaBlob(item.id);
+        if (cachedBlob) {
+          return { ...item, url: URL.createObjectURL(cachedBlob) };
+        }
+      }
+      return item;
+    })
+  );
 }
 
 export async function deleteMemoryFromFirestore(memoryId: string): Promise<void> {
@@ -393,6 +465,7 @@ export async function deleteMemoryFromFirestore(memoryId: string): Promise<void>
 
     batch.delete(memoryRef);
     await batch.commit();
+    await deleteCachedMediaBlob(memoryId);
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, path);
   }
@@ -404,7 +477,7 @@ export async function fetchLetterFromFirestore(): Promise<LoveLetterData | null>
     const snap = await getDoc(doc(db, 'letter', 'birthday'));
     if (!snap.exists()) return null;
     const data = snap.data();
-    return {
+    const letter: LoveLetterData = {
       recipient: data.recipient || 'Tsi',
       notice: data.notice || '',
       salutation: data.salutation || 'Happy Birthday, My Sunshine ❤️',
@@ -413,9 +486,15 @@ export async function fetchLetterFromFirestore(): Promise<LoveLetterData | null>
       signature: data.signature || 'Yours ❤️',
       anniversaryDate: data.anniversaryDate || 'On Your Special Birthday',
     };
+    await saveCachedLetter(letter);
+    return letter;
   } catch (error) {
     handleFirestoreError(error, OperationType.GET, path);
   }
+}
+
+export async function getCachedLetterFallback(): Promise<LoveLetterData | null> {
+  return getCachedLetter();
 }
 
 export async function saveLetterToFirestore(
@@ -459,6 +538,7 @@ export async function saveLetterToFirestore(
         updatedAt: serverTimestamp(),
       });
     }
+    await saveCachedLetter({ ...letter, paragraphs });
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, path);
   }
