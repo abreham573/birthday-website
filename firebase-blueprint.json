@@ -1,0 +1,218 @@
+{
+  "entities": {
+    "Memory": {
+      "title": "Memory",
+      "description": "A photo or video memory of Tsi stored for her birthday gallery.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["photo", "video"],
+          "description": "Whether the memory is a photo or a video."
+        },
+        "url": {
+          "type": "string",
+          "maxLength": 900000,
+          "description": "Media URL or compressed data URL if not chunked; empty string when chunked."
+        },
+        "mimeType": {
+          "type": "string",
+          "maxLength": 100,
+          "description": "MIME type of the uploaded media."
+        },
+        "isChunked": {
+          "type": "boolean",
+          "description": "True if the media payload is split across subcollection chunks."
+        },
+        "chunkCount": {
+          "type": "integer",
+          "description": "Number of chunks in the chunks subcollection (0 when inline)."
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160,
+          "description": "Memory title."
+        },
+        "caption": {
+          "type": "string",
+          "maxLength": 1000,
+          "description": "Romantic caption for the memory."
+        },
+        "date": {
+          "type": "string",
+          "maxLength": 80,
+          "description": "Occasion or date label."
+        },
+        "tag": {
+          "type": "string",
+          "maxLength": 60,
+          "description": "Category tag."
+        },
+        "aspectRatio": {
+          "type": "string",
+          "enum": ["4:3", "16:9", "1:1", "9:16"],
+          "description": "Display aspect ratio."
+        },
+        "authorId": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "maxLength": 128,
+          "description": "UID of the owner who uploaded this memory."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the memory was created."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the memory was last updated."
+        }
+      },
+      "required": [
+        "type",
+        "url",
+        "mimeType",
+        "isChunked",
+        "chunkCount",
+        "title",
+        "caption",
+        "date",
+        "tag",
+        "aspectRatio",
+        "authorId",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "MediaChunk": {
+      "title": "MediaChunk",
+      "description": "A chunk of a larger uploaded photo or video data URL.",
+      "type": "object",
+      "properties": {
+        "index": {
+          "type": "integer",
+          "description": "Zero-based chunk sequence index."
+        },
+        "data": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 750000,
+          "description": "Base64 slice of the media data URL."
+        },
+        "authorId": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "maxLength": 128,
+          "description": "UID of the owner who uploaded this chunk."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the chunk was created."
+        }
+      },
+      "required": ["index", "data", "authorId", "createdAt"]
+    },
+    "LoveLetter": {
+      "title": "LoveLetter",
+      "description": "The customized birthday love letter for Tsi.",
+      "type": "object",
+      "properties": {
+        "recipient": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80,
+          "description": "Recipient name."
+        },
+        "notice": {
+          "type": "string",
+          "maxLength": 400,
+          "description": "Playful opening notice."
+        },
+        "salutation": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160,
+          "description": "Opening salutation."
+        },
+        "paragraphs": {
+          "type": "array",
+          "description": "List of love letter paragraphs."
+        },
+        "closing": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120,
+          "description": "Closing line."
+        },
+        "signature": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120,
+          "description": "Signature line."
+        },
+        "anniversaryDate": {
+          "type": "string",
+          "maxLength": 80,
+          "description": "Special occasion label."
+        },
+        "authorId": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "maxLength": 128,
+          "description": "UID of the owner."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the letter was last updated."
+        }
+      },
+      "required": [
+        "recipient",
+        "notice",
+        "salutation",
+        "paragraphs",
+        "closing",
+        "signature",
+        "anniversaryDate",
+        "authorId",
+        "updatedAt"
+      ]
+    },
+    "AdminRecord": {
+      "title": "AdminRecord",
+      "description": "Trusted admin marker document.",
+      "type": "object",
+      "properties": {
+        "role": {
+          "type": "string",
+          "enum": ["admin"],
+          "description": "Admin role marker."
+        }
+      },
+      "required": ["role"]
+    }
+  },
+  "firestore": {
+    "/memories/{memoryId}": {
+      "schema": { "$ref": "#/entities/Memory" },
+      "description": "Publicly readable birthday photo and video memories; writable only by verified owner/admin."
+    },
+    "/memories/{memoryId}/chunks/{chunkId}": {
+      "schema": { "$ref": "#/entities/MediaChunk" },
+      "description": "Chunked media payload slices for larger photos/videos under a parent Memory document."
+    },
+    "/letter/{letterId}": {
+      "schema": { "$ref": "#/entities/LoveLetter" },
+      "description": "Birthday love letter document (id 'birthday'), publicly readable and editable only by verified owner/admin."
+    },
+    "/admins/{userId}": {
+      "schema": { "$ref": "#/entities/AdminRecord" },
+      "description": "Admin lookup collection for RBAC verification."
+    }
+  }
+}

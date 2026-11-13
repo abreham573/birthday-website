@@ -4,9 +4,22 @@
  */
 
 import React, { useState, useEffect } from 'react';
+import { onAuthStateChanged, User } from 'firebase/auth';
 import { TabType, MemoryItem, LoveLetterData } from './types';
 import { INITIAL_MEMORIES } from './data/initialMemories';
 import { DEFAULT_LOVE_LETTER } from './data/defaultLetter';
+import {
+  auth,
+  isOwnerUser,
+  signInOwner,
+  signOutOwner,
+} from './lib/firebase';
+import {
+  fetchMemoriesFromFirestore,
+  deleteMemoryFromFirestore,
+  fetchLetterFromFirestore,
+  saveLetterToFirestore,
+} from './lib/memoriesService';
 import { BackgroundEffects } from './components/BackgroundEffects';
 import { Navbar } from './components/Navbar';
 import { MemoriesPage } from './components/MemoriesPage';
@@ -21,37 +34,16 @@ export default function App() {
   // Page Navigation: Memories (1st), Love Letter (2nd), Song (3rd)
   const [activeTab, setActiveTab] = useState<TabType>('memories');
 
-  // Memories state: Starts with permanent INITIAL_MEMORIES, synced across devices
-  const [memories, setMemories] = useState<MemoryItem[]>(() => {
-    try {
-      const saved = localStorage.getItem('tsi_memories_v4');
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          // Ensure INITIAL_MEMORIES are preserved if not in saved list
-          const existingIds = new Set(parsed.map((m: MemoryItem) => m.id));
-          const missingInitial = INITIAL_MEMORIES.filter((m) => !existingIds.has(m.id));
-          return [...parsed, ...missingInitial];
-        }
-      }
-    } catch {
-      // Fallback
-    }
-    return INITIAL_MEMORIES;
-  });
+  // Firebase Auth State (only owner uploads/edits; Tsi views publicly without login)
+  const [user, setUser] = useState<User | null>(null);
+  const isOwner = isOwnerUser(user);
 
-  // Love Letter state (persisted in localStorage)
-  const [letterData, setLetterData] = useState<LoveLetterData>(() => {
-    try {
-      const saved = localStorage.getItem('tsi_love_letter_v2');
-      if (saved) {
-        return JSON.parse(saved);
-      }
-    } catch {
-      // Fallback
-    }
-    return DEFAULT_LOVE_LETTER;
-  });
+  // Cloud-synced Memories state
+  const [memories, setMemories] = useState<MemoryItem[]>(INITIAL_MEMORIES);
+  const [isLoadingMemories, setIsLoadingMemories] = useState<boolean>(true);
+
+  // Cloud-synced Love Letter state
+  const [letterData, setLetterData] = useState<LoveLetterData>(DEFAULT_LOVE_LETTER);
 
   // Modals
   const [isAddModalOpen, setIsAddModalOpen] = useState<boolean>(false);
@@ -60,60 +52,92 @@ export default function App() {
   // Hidden Heart Animation Hook for Love Letter
   const { triggerHeartBurst, tapCount, renderFloatingHearts } = useHeartTapEffect();
 
-  // Fetch server-persisted memories on mount so Tsi sees any added memories on her device
+  // Listen to Firebase Auth state
   useEffect(() => {
-    fetch('/api/memories')
-      .then((res) => res.json())
-      .then((data) => {
-        if (data && data.success && Array.isArray(data.memories)) {
-          if (data.memories.length > 0) {
-            setMemories(data.memories);
-            try {
-              localStorage.setItem('tsi_memories_v4', JSON.stringify(data.memories));
-            } catch {}
-          }
-        }
-      })
-      .catch(() => {
-        // Graceful fallback to initial memories
-      });
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      setUser(currentUser);
+    });
+    return () => unsubscribe();
   }, []);
 
-  // Save memories to localStorage
+  // Fetch cloud-persisted memories & love letter on mount so Tsi sees everything on any device
   useEffect(() => {
-    try {
-      localStorage.setItem('tsi_memories_v4', JSON.stringify(memories));
-    } catch {
-      // ignore quota error
-    }
-  }, [memories]);
+    let active = true;
 
-  // Save letter to localStorage
-  const handleUpdateLetter = (updated: LoveLetterData) => {
-    setLetterData(updated);
-    try {
-      localStorage.setItem('tsi_love_letter_v2', JSON.stringify(updated));
-    } catch {
-      // ignore
+    async function loadCloudData() {
+      try {
+        const [cloudMemories, cloudLetter] = await Promise.all([
+          fetchMemoriesFromFirestore().catch((err) => {
+            console.error('Failed to load memories from Firestore:', err);
+            return [] as MemoryItem[];
+          }),
+          fetchLetterFromFirestore().catch((err) => {
+            console.error('Failed to load letter from Firestore:', err);
+            return null;
+          }),
+        ]);
+
+        if (!active) return;
+
+        if (cloudMemories.length > 0) {
+          setMemories(cloudMemories);
+        }
+        if (cloudLetter) {
+          setLetterData(cloudLetter);
+        }
+      } finally {
+        if (active) {
+          setIsLoadingMemories(false);
+        }
+      }
     }
+
+    loadCloudData();
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const handleSignInOwner = async () => {
+    await signInOwner();
   };
 
-  // Add new photo or video
+  const handleSignOutOwner = async () => {
+    await signOutOwner();
+  };
+
+  // Save letter to Firestore when signed in as owner
+  const handleUpdateLetter = async (updated: LoveLetterData) => {
+    if (!user || !isOwner) {
+      throw new Error('Please sign in with the creator Google account to save changes.');
+    }
+    await saveLetterToFirestore(updated, user.uid);
+    setLetterData(updated);
+  };
+
+  // Add new photo or video to UI state (already persisted to Firestore by AddMediaModal)
   const handleAddMemory = (newItem: MemoryItem) => {
     setMemories((prev) => [newItem, ...prev.filter((m) => m.id !== newItem.id)]);
   };
 
-  // Add multiple photos or videos
+  // Add multiple photos or videos to UI state
   const handleAddMultipleMemories = (newItems: MemoryItem[]) => {
-    setMemories((prev) => [...newItems, ...prev.filter((m) => !newItems.some((n) => n.id === m.id))]);
+    setMemories((prev) => [
+      ...newItems,
+      ...prev.filter((m) => !newItems.some((n) => n.id === m.id)),
+    ]);
   };
 
-  // Delete memory (locally and from server)
-  const handleDeleteMemory = (id: string) => {
-    setMemories((prev) => prev.filter((m) => m.id !== id));
-    fetch(`/api/memories/${id}`, {
-      method: 'DELETE',
-    }).catch(() => {});
+  // Delete memory permanently from Firestore
+  const handleDeleteMemory = async (id: string) => {
+    if (!isOwner) return;
+    try {
+      await deleteMemoryFromFirestore(id);
+      setMemories((prev) => prev.filter((m) => m.id !== id));
+    } catch (err) {
+      console.error('Failed to delete memory from Firestore:', err);
+    }
   };
 
   // Scroll to top when switching pages
@@ -143,6 +167,8 @@ export default function App() {
         {activeTab === 'memories' && (
           <MemoriesPage
             memories={memories}
+            isLoading={isLoadingMemories}
+            isOwner={isOwner}
             onOpenAddModal={() => setIsAddModalOpen(true)}
             onSelectMemory={(item) => setSelectedLightboxItem(item)}
             onNavigateToLetter={() => handleSelectTab('letter')}
@@ -153,6 +179,8 @@ export default function App() {
         {activeTab === 'letter' && (
           <LoveLetterPage
             letterData={letterData}
+            isOwner={isOwner}
+            onSignInOwner={handleSignInOwner}
             onUpdateLetter={handleUpdateLetter}
             onHeartTap={triggerHeartBurst}
             tapCount={tapCount}
@@ -176,6 +204,7 @@ export default function App() {
       <LightboxModal
         item={selectedLightboxItem}
         items={memories}
+        isOwner={isOwner}
         onClose={() => setSelectedLightboxItem(null)}
         onSelect={(item) => setSelectedLightboxItem(item)}
         onDelete={handleDeleteMemory}
@@ -187,6 +216,10 @@ export default function App() {
         onClose={() => setIsAddModalOpen(false)}
         onAdd={handleAddMemory}
         onAddMultiple={handleAddMultipleMemories}
+        user={user}
+        isOwner={isOwner}
+        onSignInOwner={handleSignInOwner}
+        onSignOutOwner={handleSignOutOwner}
       />
 
       {/* Footer */}

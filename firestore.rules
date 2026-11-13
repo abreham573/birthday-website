@@ -1,0 +1,168 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global Safety Net (Default Deny)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Core Primitives
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isSignedIn()
+        && request.auth.token.email_verified == true
+        && (
+          request.auth.token.email == 'abrehamreigns@gmail.com'
+          || exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+        );
+    }
+
+    // Validation Blueprints
+    function isValidMemory(data) {
+      return data.keys().hasAll([
+          'type', 'url', 'mimeType', 'isChunked', 'chunkCount',
+          'title', 'caption', 'date', 'tag', 'aspectRatio',
+          'authorId', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'type', 'url', 'mimeType', 'isChunked', 'chunkCount',
+          'title', 'caption', 'date', 'tag', 'aspectRatio',
+          'authorId', 'createdAt', 'updatedAt'
+        ])
+        && data.type in ['photo', 'video']
+        && data.url is string && data.url.size() <= 900000
+        && data.mimeType is string && data.mimeType.size() <= 100
+        && data.isChunked is bool
+        && data.chunkCount is int && data.chunkCount >= 0 && data.chunkCount <= 40
+        && (
+          (data.isChunked == false && data.chunkCount == 0 && data.url.size() >= 1)
+          || (data.isChunked == true && data.chunkCount >= 1 && data.url == '')
+        )
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 160
+        && data.caption is string && data.caption.size() <= 1000
+        && data.date is string && data.date.size() <= 80
+        && data.tag is string && data.tag.size() <= 60
+        && data.aspectRatio in ['4:3', '16:9', '1:1', '9:16']
+        && isValidId(data.authorId) && data.authorId == request.auth.uid
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidChunk(data) {
+      return data.keys().hasAll(['index', 'data', 'authorId', 'createdAt'])
+        && data.keys().hasOnly(['index', 'data', 'authorId', 'createdAt'])
+        && data.index is int && data.index >= 0 && data.index < 40
+        && data.data is string && data.data.size() >= 1 && data.data.size() <= 750000
+        && isValidId(data.authorId) && data.authorId == request.auth.uid
+        && data.createdAt is timestamp;
+    }
+
+    function isValidLetter(data) {
+      return data.keys().hasAll([
+          'recipient', 'notice', 'salutation', 'paragraphs',
+          'closing', 'signature', 'anniversaryDate', 'authorId', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'recipient', 'notice', 'salutation', 'paragraphs',
+          'closing', 'signature', 'anniversaryDate', 'authorId', 'updatedAt'
+        ])
+        && data.recipient is string && data.recipient.size() >= 1 && data.recipient.size() <= 80
+        && data.notice is string && data.notice.size() <= 400
+        && data.salutation is string && data.salutation.size() >= 1 && data.salutation.size() <= 160
+        && data.paragraphs is list && data.paragraphs.size() >= 1 && data.paragraphs.size() <= 30
+        && data.paragraphs[0] is string && data.paragraphs[0].size() <= 4000
+        && data.closing is string && data.closing.size() >= 1 && data.closing.size() <= 120
+        && data.signature is string && data.signature.size() >= 1 && data.signature.size() <= 120
+        && data.anniversaryDate is string && data.anniversaryDate.size() <= 80
+        && isValidId(data.authorId) && data.authorId == request.auth.uid
+        && data.updatedAt is timestamp;
+    }
+
+    // Public Birthday Gallery Memories (Readable by Tsi & visitors, writable only by verified owner)
+    match /memories/{memoryId} {
+      allow get: if isValidId(memoryId);
+      allow list: if true;
+
+      allow create: if isAdmin()
+        && isValidId(memoryId)
+        && isValidMemory(incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      allow update: if isAdmin()
+        && isValidId(memoryId)
+        && isValidMemory(incoming())
+        && incoming().authorId == existing().authorId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['title', 'caption', 'date', 'tag', 'updatedAt']);
+
+      allow delete: if isAdmin() && isValidId(memoryId);
+
+      // Media chunks subcollection for larger photos/videos
+      match /chunks/{chunkId} {
+        allow get: if isValidId(memoryId)
+          && isValidId(chunkId)
+          && exists(/databases/$(database)/documents/memories/$(memoryId));
+        allow list: if isValidId(memoryId);
+
+        allow create: if isAdmin()
+          && isValidId(memoryId)
+          && isValidId(chunkId)
+          && isValidChunk(incoming())
+          && incoming().createdAt == request.time
+          && existsAfter(/databases/$(database)/documents/memories/$(memoryId));
+
+        allow update: if false;
+        allow delete: if isAdmin() && isValidId(memoryId) && isValidId(chunkId);
+      }
+    }
+
+    // Birthday Love Letter (Publicly readable birthday doc, editable only by verified owner)
+    match /letter/{letterId} {
+      allow get: if isValidId(letterId) && letterId == 'birthday';
+      allow list: if false;
+
+      allow create: if isAdmin()
+        && isValidId(letterId)
+        && letterId == 'birthday'
+        && isValidLetter(incoming())
+        && incoming().updatedAt == request.time;
+
+      allow update: if isAdmin()
+        && isValidId(letterId)
+        && letterId == 'birthday'
+        && isValidLetter(incoming())
+        && incoming().authorId == existing().authorId
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'recipient', 'notice', 'salutation', 'paragraphs',
+          'closing', 'signature', 'anniversaryDate', 'updatedAt'
+        ]);
+
+      allow delete: if false;
+    }
+
+    // Trusted Admins Collection
+    match /admins/{userId} {
+      allow get: if isSignedIn() && isValidId(userId) && request.auth.uid == userId;
+      allow list, create, update, delete: if false;
+    }
+  }
+}

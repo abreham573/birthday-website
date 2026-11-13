@@ -1,10 +1,12 @@
-import React, { useState } from 'react';
-import { Heart, Sparkles, Music, Camera, Edit3, Check, RefreshCw } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { Heart, Sparkles, Music, Camera, Edit3, Check, RefreshCw, Lock, Loader2 } from 'lucide-react';
 import { LoveLetterData } from '../types';
 
 interface LoveLetterPageProps {
   letterData: LoveLetterData;
-  onUpdateLetter: (updated: LoveLetterData) => void;
+  isOwner?: boolean;
+  onSignInOwner?: () => Promise<void>;
+  onUpdateLetter: (updated: LoveLetterData) => Promise<void> | void;
   onHeartTap: (x: number, y: number, customText?: string) => void;
   tapCount: number;
   onNavigateToMemories: () => void;
@@ -13,6 +15,8 @@ interface LoveLetterPageProps {
 
 export const LoveLetterPage: React.FC<LoveLetterPageProps> = ({
   letterData,
+  isOwner = false,
+  onSignInOwner,
   onUpdateLetter,
   onHeartTap,
   tapCount,
@@ -22,6 +26,12 @@ export const LoveLetterPage: React.FC<LoveLetterPageProps> = ({
   const [isOpen, setIsOpen] = useState<boolean>(true);
   const [isEditing, setIsEditing] = useState<boolean>(false);
   const [editedLetter, setEditedLetter] = useState<LoveLetterData>(letterData);
+  const [isSaving, setIsSaving] = useState<boolean>(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setEditedLetter(letterData);
+  }, [letterData]);
 
   const handleEnvelopeClick = (e: React.MouseEvent<HTMLDivElement>) => {
     onHeartTap(e.clientX, e.clientY, 'Opened with Love ❤️');
@@ -33,9 +43,23 @@ export const LoveLetterPage: React.FC<LoveLetterPageProps> = ({
     onHeartTap(e.clientX, e.clientY);
   };
 
-  const handleSaveEdit = () => {
-    onUpdateLetter(editedLetter);
-    setIsEditing(false);
+  const handleSaveEdit = async () => {
+    setSaveError(null);
+    if (!isOwner) {
+      setSaveError('Please sign in with your creator Google account above before saving to the cloud.');
+      return;
+    }
+    setIsSaving(true);
+    try {
+      await onUpdateLetter(editedLetter);
+      setIsEditing(false);
+    } catch (err) {
+      setSaveError(
+        err instanceof Error ? err.message : 'Could not save changes to cloud.'
+      );
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   return (
@@ -143,6 +167,26 @@ export const LoveLetterPage: React.FC<LoveLetterPageProps> = ({
             {/* Letter Content */}
             {isEditing ? (
               <div className="space-y-4" onClick={(e) => e.stopPropagation()}>
+                {!isOwner && (
+                  <div className="p-3.5 rounded-xl bg-rose-900/10 border border-rose-700/25 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div className="flex items-center gap-2 text-xs text-rose-950">
+                      <Lock className="w-4 h-4 text-rose-700 shrink-0" />
+                      <span>
+                        Sign in with your creator Google account to save letter edits to the cloud for Tsi.
+                      </span>
+                    </div>
+                    {onSignInOwner && (
+                      <button
+                        type="button"
+                        onClick={() => onSignInOwner().catch((err) => setSaveError(err instanceof Error ? err.message : 'Sign-in failed'))}
+                        className="px-3.5 py-1.5 bg-rose-700 hover:bg-rose-800 text-white rounded-lg text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer"
+                      >
+                        Sign In with Google
+                      </button>
+                    )}
+                  </div>
+                )}
+
                 <div>
                   <label className="block text-xs font-semibold text-rose-900 uppercase tracking-wider mb-1">
                     Playful Opening Reminder / Notice
@@ -170,7 +214,7 @@ export const LoveLetterPage: React.FC<LoveLetterPageProps> = ({
 
                 <div>
                   <label className="block text-xs font-semibold text-rose-900 uppercase tracking-wider mb-1">
-                    Love Letter Paragraphs (separated by newlines)
+                    Love Letter Paragraphs (separated by blank lines)
                   </label>
                   <textarea
                     rows={10}
@@ -205,13 +249,33 @@ export const LoveLetterPage: React.FC<LoveLetterPageProps> = ({
                   </div>
                 </div>
 
-                <div className="flex justify-end pt-2">
+                {saveError && (
+                  <p className="text-xs text-red-700 bg-red-100 border border-red-300 rounded-lg p-2.5">
+                    {saveError}
+                  </p>
+                )}
+
+                <div className="flex justify-end gap-2 pt-2">
                   <button
                     type="button"
-                    onClick={handleSaveEdit}
-                    className="px-5 py-2 bg-rose-700 text-white rounded-xl text-xs font-semibold hover:bg-rose-800 transition-colors shadow"
+                    disabled={isSaving}
+                    onClick={() => {
+                      setEditedLetter(letterData);
+                      setSaveError(null);
+                      setIsEditing(false);
+                    }}
+                    className="px-4 py-2 text-rose-900 hover:bg-rose-900/10 rounded-xl text-xs font-medium transition-colors"
                   >
-                    Save Changes
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isSaving}
+                    onClick={handleSaveEdit}
+                    className="px-5 py-2 bg-rose-700 text-white rounded-xl text-xs font-semibold hover:bg-rose-800 transition-colors shadow flex items-center gap-1.5 disabled:opacity-60 cursor-pointer"
+                  >
+                    {isSaving && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                    <span>{isSaving ? 'Saving...' : 'Save to Cloud'}</span>
                   </button>
                 </div>
               </div>

@@ -5,6 +5,7 @@ import { MemoryItem } from '../types';
 interface LightboxModalProps {
   item: MemoryItem | null;
   items: MemoryItem[];
+  isOwner?: boolean;
   onClose: () => void;
   onSelect: (item: MemoryItem) => void;
   onDelete?: (id: string) => void;
@@ -13,6 +14,7 @@ interface LightboxModalProps {
 export const LightboxModal: React.FC<LightboxModalProps> = ({
   item,
   items,
+  isOwner = false,
   onClose,
   onSelect,
   onDelete,
@@ -90,6 +92,7 @@ export const LightboxModal: React.FC<LightboxModalProps> = ({
             <img
               src={item.url}
               alt={item.title}
+              referrerPolicy="no-referrer"
               className="w-full h-full object-contain select-none"
             />
           ) : (
@@ -114,14 +117,14 @@ export const LightboxModal: React.FC<LightboxModalProps> = ({
               <span>Memory {currentIndex + 1} of {items.length}</span>
             </div>
 
-            {onDelete && (
+            {isOwner && onDelete && (
               <button
                 onClick={() => {
                   onDelete(item.id);
                   onClose();
                 }}
-                className="flex items-center gap-1 text-xs text-red-400 hover:text-red-300 transition-colors p-1"
-                title="Delete this photo"
+                className="flex items-center gap-1 text-xs text-red-400 hover:text-red-300 transition-colors p-1 cursor-pointer"
+                title="Delete this memory"
               >
                 <Trash2 className="w-3.5 h-3.5" />
                 <span>Remove</span>

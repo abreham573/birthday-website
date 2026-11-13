@@ -1,9 +1,11 @@
 import React, { useState } from 'react';
-import { Play, Plus, ArrowRight, Heart, Sparkles, Image as ImageIcon, Camera } from 'lucide-react';
+import { Play, Plus, ArrowRight, Heart, Sparkles, Camera } from 'lucide-react';
 import { MemoryItem } from '../types';
 
 interface MemoriesPageProps {
   memories: MemoryItem[];
+  isLoading?: boolean;
+  isOwner?: boolean;
   onOpenAddModal: () => void;
   onSelectMemory: (item: MemoryItem) => void;
   onNavigateToLetter: () => void;
@@ -12,6 +14,8 @@ interface MemoriesPageProps {
 
 export const MemoriesPage: React.FC<MemoriesPageProps> = ({
   memories,
+  isLoading = false,
+  isOwner = false,
   onOpenAddModal,
   onSelectMemory,
   onNavigateToLetter,
@@ -36,7 +40,11 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
         </div>
 
         <h1 className="font-serif-cormorant text-3xl sm:text-5xl lg:text-6xl font-bold text-white tracking-tight leading-tight">
-          Happy Birthday, <span className="text-transparent bg-clip-text bg-gradient-to-r from-rose-300 via-rose-100 to-amber-200">Tsi</span> ❤️
+          Happy Birthday,{' '}
+          <span className="text-transparent bg-clip-text bg-gradient-to-r from-rose-300 via-rose-100 to-amber-200">
+            Tsi
+          </span>{' '}
+          ❤️
         </h1>
 
         <p className="mt-3 text-sm sm:text-base text-rose-200/80 max-w-2xl mx-auto leading-relaxed font-light">
@@ -45,7 +53,9 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
 
         {/* Clean Unboxed Metadata / Stats */}
         <div className="flex items-center justify-center gap-3 mt-4 text-xs text-rose-300/70">
-          <span>{memories.length} {memories.length === 1 ? 'Moment' : 'Moments'} Saved</span>
+          <span className="tabular-nums">
+            {memories.length} {memories.length === 1 ? 'Moment' : 'Moments'} Saved
+          </span>
           <span aria-hidden="true">·</span>
           <span>Every Smile Cherished</span>
           <span aria-hidden="true">·</span>
@@ -102,30 +112,45 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
         {/* Add Memory Button */}
         <button
           onClick={onOpenAddModal}
-          className="w-full sm:w-auto flex items-center justify-center gap-2 px-5 py-2.5 text-xs font-semibold text-white bg-gradient-to-r from-rose-600 to-red-600 rounded-xl hover:from-rose-500 hover:to-red-500 active:scale-95 transition-all shadow-lg shadow-rose-950/40"
+          className="w-full sm:w-auto flex items-center justify-center gap-2 px-5 py-2.5 text-xs font-semibold text-white bg-gradient-to-r from-rose-600 to-red-600 rounded-xl hover:from-rose-500 hover:to-red-500 active:scale-95 transition-all shadow-lg shadow-rose-950/40 whitespace-nowrap shrink-0 cursor-pointer"
         >
           <Plus className="w-4 h-4" />
-          <span>+ Add Photos of Tsi</span>
+          <span>Add Photos & Videos</span>
         </button>
       </div>
 
-      {/* When Empty: Dedicated Empty State Card */}
-      {memories.length === 0 ? (
-        <div className="romantic-card rounded-3xl p-8 sm:p-14 text-center border-2 border-dashed border-rose-500/30 max-w-2xl mx-auto my-8">
+      {/* Loading Skeleton State */}
+      {isLoading ? (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5 sm:gap-6">
+          {[1, 2, 3].map((n) => (
+            <div
+              key={n}
+              className="romantic-card rounded-2xl overflow-hidden animate-pulse"
+            >
+              <div className="aspect-[4/3] bg-rose-950/60" />
+              <div className="p-5 space-y-3">
+                <div className="h-3 w-24 bg-rose-900/50 rounded" />
+                <div className="h-5 w-3/4 bg-rose-900/60 rounded" />
+                <div className="h-3 w-full bg-rose-900/40 rounded" />
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : memories.length === 0 ? (
+        /* Empty State */
+        <div className="romantic-card rounded-3xl p-8 sm:p-14 text-center border border-rose-500/25 max-w-2xl mx-auto my-8">
           <div className="w-20 h-20 mx-auto rounded-full bg-rose-900/40 border border-rose-400/30 flex items-center justify-center text-rose-300 mb-5 shadow-xl shadow-rose-950/50">
-            <Camera className="w-10 h-10 text-rose-400 animate-pulse" />
+            <Camera className="w-10 h-10 text-rose-400" />
           </div>
 
-          <span className="text-[11px] font-semibold tracking-widest text-rose-400 uppercase">
-            Blank Canvas For Her Birthday
-          </span>
-
           <h2 className="font-serif-cormorant text-2xl sm:text-3xl font-bold text-white mt-2 mb-3">
-            Add Your Photos of Tsi
+            Our Photo & Video Gallery
           </h2>
 
           <p className="text-xs sm:text-sm text-rose-200/80 max-w-md mx-auto leading-relaxed font-light mb-6">
-            Default photos have been cleared! Now you can upload real photos of Tsi from your phone or computer. You can upload multiple pictures at once.
+            {isOwner
+              ? 'Upload photos and videos of Tsi from your device. Everything saved here stays permanently in the cloud for her to see on her phone.'
+              : 'Sign in with your creator Google account to upload photos and videos of Tsi so she sees them here automatically when you share the link.'}
           </p>
 
           <button
@@ -133,12 +158,18 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
             className="inline-flex items-center gap-2.5 px-6 py-3.5 text-sm font-semibold text-white bg-gradient-to-r from-rose-600 to-red-600 rounded-2xl hover:from-rose-500 hover:to-red-500 shadow-xl shadow-rose-950/60 active:scale-95 transition-all cursor-pointer"
           >
             <Plus className="w-5 h-5" />
-            <span>Upload Her Photos Now</span>
+            <span>{isOwner ? 'Upload Her Photos Now' : 'Sign In & Upload Photos'}</span>
             <Heart className="w-4 h-4 fill-current ml-1" />
           </button>
         </div>
+      ) : filteredMemories.length === 0 ? (
+        <div className="romantic-card rounded-3xl p-8 text-center max-w-xl mx-auto my-8">
+          <p className="text-sm text-rose-200/80">
+            No items match this filter yet. Try switching back to All Moments.
+          </p>
+        </div>
       ) : (
-        /* Grid of User-Added Memories */
+        /* Grid of Cloud-Persisted Memories */
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5 sm:gap-6">
           {filteredMemories.map((item, index) => (
             <article
@@ -152,6 +183,7 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
                   <img
                     src={item.url}
                     alt={item.title}
+                    referrerPolicy="no-referrer"
                     loading={index < 3 ? 'eager' : 'lazy'}
                     className="w-full h-full object-cover transition-transform duration-700 ease-out group-hover:scale-105"
                   />
@@ -161,11 +193,15 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
                       <img
                         src={item.thumbnailUrl}
                         alt={item.title}
+                        referrerPolicy="no-referrer"
                         className="w-full h-full object-cover"
                       />
                     ) : (
                       <video
                         src={item.url}
+                        preload="metadata"
+                        muted
+                        playsInline
                         className="w-full h-full object-cover"
                       />
                     )}
@@ -185,7 +221,7 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
                   </span>
                 </div>
 
-                {/* Type pill on top-right */}
+                {/* Type indicator */}
                 <div className="absolute top-3 right-3">
                   <span className="px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-white bg-rose-600/90 rounded-md">
                     {item.type}
@@ -208,28 +244,32 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
                 </div>
 
                 <div className="mt-4 pt-3 border-t border-rose-500/15 flex items-center justify-between text-xs text-rose-400">
-                  <span className="font-medium group-hover:translate-x-0.5 transition-transform">View Full Photo</span>
+                  <span className="font-medium group-hover:translate-x-0.5 transition-transform">
+                    View Full {item.type === 'video' ? 'Video' : 'Photo'}
+                  </span>
                   <Heart className="w-3.5 h-3.5 fill-current text-rose-500/50 group-hover:text-rose-400 transition-colors" />
                 </div>
               </div>
             </article>
           ))}
 
-          {/* Add Another Photo Card Slot in the grid */}
-          <div
-            onClick={onOpenAddModal}
-            className="border-2 border-dashed border-rose-500/25 hover:border-rose-400/50 rounded-2xl p-8 flex flex-col items-center justify-center text-center cursor-pointer bg-rose-950/20 hover:bg-rose-950/35 transition-all min-h-[300px] group"
-          >
-            <div className="w-14 h-14 rounded-full bg-rose-900/40 text-rose-300 group-hover:text-white group-hover:bg-rose-600/80 transition-all flex items-center justify-center mb-3">
-              <Plus className="w-6 h-6" />
+          {/* Add Another Photo Card Slot (visible to owner) */}
+          {isOwner && (
+            <div
+              onClick={onOpenAddModal}
+              className="border-2 border-dashed border-rose-500/25 hover:border-rose-400/50 rounded-2xl p-8 flex flex-col items-center justify-center text-center cursor-pointer bg-rose-950/20 hover:bg-rose-950/35 transition-all min-h-[300px] group"
+            >
+              <div className="w-14 h-14 rounded-full bg-rose-900/40 text-rose-300 group-hover:text-white group-hover:bg-rose-600/80 transition-all flex items-center justify-center mb-3">
+                <Plus className="w-6 h-6" />
+              </div>
+              <h4 className="font-serif-cormorant text-xl font-bold text-white group-hover:text-rose-200 transition-colors">
+                Add More Photos
+              </h4>
+              <p className="text-xs text-rose-300/70 mt-1 max-w-[200px]">
+                Upload more pictures or videos of Tsi
+              </p>
             </div>
-            <h4 className="font-serif-cormorant text-xl font-bold text-white group-hover:text-rose-200 transition-colors">
-              Add More Photos
-            </h4>
-            <p className="text-xs text-rose-300/70 mt-1 max-w-[200px]">
-              Upload more pictures or videos of Tsi
-            </p>
-          </div>
+          )}
         </div>
       )}
 
@@ -244,7 +284,7 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
               Read The Special Love Letter For Tsi
             </h3>
             <p className="text-xs sm:text-sm text-rose-200/80 mt-1 max-w-xl font-light">
-              Your custom handwritten letter for Tsi, with a sweet hidden heart animation waiting when she taps it.
+              A handwritten letter for Tsi, with a sweet hidden heart animation waiting when she taps it.
             </p>
           </div>
 
