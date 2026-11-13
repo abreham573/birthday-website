@@ -5,6 +5,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { onAuthStateChanged, User } from 'firebase/auth';
+import { Lock } from 'lucide-react';
 import { TabType, MemoryItem, LoveLetterData } from './types';
 import { INITIAL_MEMORIES } from './data/initialMemories';
 import { DEFAULT_LOVE_LETTER } from './data/defaultLetter';
@@ -52,8 +53,13 @@ export default function App() {
   // Hidden Heart Animation Hook for Love Letter
   const { triggerHeartBurst, tapCount, renderFloatingHearts } = useHeartTapEffect();
 
-  // Listen to Firebase Auth state
+  // Listen to Firebase Auth state & support ?admin=1 creator access shortcut
   useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('admin') === '1' || params.get('admin') === 'true') {
+      setIsAddModalOpen(true);
+    }
+
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
       setUser(currentUser);
     });
@@ -146,6 +152,9 @@ export default function App() {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
+  // Show Add controls only to the signed-in owner, or before the first memory is uploaded
+  const showAddControls = isOwner || (!isLoadingMemories && memories.length === 0);
+
   return (
     <div className="relative min-h-screen text-rose-50 selection:bg-rose-600 selection:text-white">
       {/* Reddish / Romantic Atmospheric Ambient Gradients & Floating Petals */}
@@ -160,6 +169,7 @@ export default function App() {
         onSelectTab={handleSelectTab}
         onOpenAddModal={() => setIsAddModalOpen(true)}
         heartCount={tapCount}
+        showAddButton={showAddControls}
       />
 
       {/* Main Pages: 1. Photos & Videos, 2. Love Letter, 3. Our Song */}
@@ -224,7 +234,18 @@ export default function App() {
 
       {/* Footer */}
       <footer className="relative z-10 border-t border-rose-500/15 py-8 text-center text-xs text-rose-300/60 pb-24 md:pb-8">
-        <p>Made with all my love for Tsi ❤️ Happy Birthday</p>
+        <div className="inline-flex items-center justify-center gap-2">
+          <p>Made with all my love for Tsi ❤️ Happy Birthday</p>
+          <button
+            type="button"
+            onClick={() => setIsAddModalOpen(true)}
+            title="Creator Access"
+            aria-label="Creator Access"
+            className="text-rose-300/25 hover:text-rose-300/80 transition-colors p-1 cursor-pointer"
+          >
+            <Lock className="w-3 h-3" />
+          </button>
+        </div>
       </footer>
     </div>
   );

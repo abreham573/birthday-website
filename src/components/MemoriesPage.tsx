@@ -21,6 +21,7 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
   onNavigateToLetter,
 }) => {
   const [filter, setFilter] = useState<'all' | 'photo' | 'video' | 'birthday'>('all');
+  const showAddButton = isOwner || (!isLoading && memories.length === 0);
 
   const filteredMemories = memories.filter((item) => {
     if (filter === 'photo') return item.type === 'photo';
@@ -64,7 +65,11 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
       </section>
 
       {/* Filter Tabs & Add Button Bar */}
-      <div className="flex flex-col sm:flex-row items-center justify-between gap-4 mb-8">
+      <div
+        className={`flex flex-col sm:flex-row items-center gap-4 mb-8 ${
+          showAddButton ? 'justify-between' : 'justify-center'
+        }`}
+      >
         {/* Interactive Segmented Filter Control */}
         <div className="flex items-center p-1 bg-rose-950/60 rounded-xl border border-rose-500/20 backdrop-blur-md w-full sm:w-auto overflow-x-auto">
           <button
@@ -109,14 +114,16 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
           </button>
         </div>
 
-        {/* Add Memory Button */}
-        <button
-          onClick={onOpenAddModal}
-          className="w-full sm:w-auto flex items-center justify-center gap-2 px-5 py-2.5 text-xs font-semibold text-white bg-gradient-to-r from-rose-600 to-red-600 rounded-xl hover:from-rose-500 hover:to-red-500 active:scale-95 transition-all shadow-lg shadow-rose-950/40 whitespace-nowrap shrink-0 cursor-pointer"
-        >
-          <Plus className="w-4 h-4" />
-          <span>Add Photos & Videos</span>
-        </button>
+        {/* Add Memory Button (shown only to owner or before first upload) */}
+        {showAddButton && (
+          <button
+            onClick={onOpenAddModal}
+            className="w-full sm:w-auto flex items-center justify-center gap-2 px-5 py-2.5 text-xs font-semibold text-white bg-gradient-to-r from-rose-600 to-red-600 rounded-xl hover:from-rose-500 hover:to-red-500 active:scale-95 transition-all shadow-lg shadow-rose-950/40 whitespace-nowrap shrink-0 cursor-pointer"
+          >
+            <Plus className="w-4 h-4" />
+            <span>Add Photos & Videos</span>
+          </button>
+        )}
       </div>
 
       {/* Loading Skeleton State */}

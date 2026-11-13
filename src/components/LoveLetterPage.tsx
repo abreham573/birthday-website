@@ -129,7 +129,7 @@ export const LoveLetterPage: React.FC<LoveLetterPageProps> = ({
       ) : (
         /* Unfolded Letter Parchment */
         <div className="relative">
-          {/* Top Controls: Edit toggle & Re-seal button */}
+          {/* Top Controls: Edit toggle (owner only) & Re-seal button */}
           <div className="flex items-center justify-between mb-4 px-2">
             <button
               onClick={() => setIsOpen(false)}
@@ -139,13 +139,15 @@ export const LoveLetterPage: React.FC<LoveLetterPageProps> = ({
               <span>Fold Back Into Envelope</span>
             </button>
 
-            <button
-              onClick={() => setIsEditing(!isEditing)}
-              className="flex items-center gap-1.5 text-xs text-rose-300 hover:text-white bg-rose-950/60 px-3 py-1.5 rounded-lg border border-rose-500/20 transition-colors"
-            >
-              {isEditing ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Edit3 className="w-3.5 h-3.5" />}
-              <span>{isEditing ? 'Done Editing' : 'Personalize Words'}</span>
-            </button>
+            {isOwner && (
+              <button
+                onClick={() => setIsEditing(!isEditing)}
+                className="flex items-center gap-1.5 text-xs text-rose-300 hover:text-white bg-rose-950/60 px-3 py-1.5 rounded-lg border border-rose-500/20 transition-colors cursor-pointer"
+              >
+                {isEditing ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Edit3 className="w-3.5 h-3.5" />}
+                <span>{isEditing ? 'Done Editing' : 'Personalize Words'}</span>
+              </button>
+            )}
           </div>
 
           {/* Letter Surface Container with tap listener */}

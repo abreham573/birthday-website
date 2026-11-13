@@ -7,6 +7,7 @@ interface NavbarProps {
   onSelectTab: (tab: TabType) => void;
   onOpenAddModal: () => void;
   heartCount: number;
+  showAddButton?: boolean;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
@@ -14,6 +15,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   onSelectTab,
   onOpenAddModal,
   heartCount,
+  showAddButton = true,
 }) => {
   return (
     <>
@@ -82,13 +84,19 @@ export const Navbar: React.FC<NavbarProps> = ({
 
           {/* Primary Action Button (Zone 3) */}
           <div className="flex items-center gap-2">
-            <button
-              onClick={onOpenAddModal}
-              className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium text-white bg-gradient-to-r from-rose-600 to-red-600 rounded-lg hover:from-rose-500 hover:to-red-500 active:scale-95 transition-all shadow-md shadow-rose-950/40 whitespace-nowrap"
-            >
-              <Plus className="w-3.5 h-3.5" />
-              <span>Add Memory</span>
-            </button>
+            {showAddButton ? (
+              <button
+                onClick={onOpenAddModal}
+                className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium text-white bg-gradient-to-r from-rose-600 to-red-600 rounded-lg hover:from-rose-500 hover:to-red-500 active:scale-95 transition-all shadow-md shadow-rose-950/40 whitespace-nowrap cursor-pointer"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>Add Memory</span>
+              </button>
+            ) : (
+              <span className="hidden md:inline-block text-xs text-rose-300/60 font-serif-cormorant italic whitespace-nowrap">
+                Made with Love
+              </span>
+            )}
           </div>
         </div>
       </header>
