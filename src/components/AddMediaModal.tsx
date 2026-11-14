@@ -453,20 +453,22 @@ export const AddMediaModal: React.FC<AddMediaModalProps> = ({
                           key={i}
                           className="relative aspect-square rounded-xl overflow-hidden bg-black/60 group border border-rose-500/20"
                         >
-                          {mediaType === 'photo' ? (
-                            <img
-                              src={preview.url}
-                              alt={`Preview ${i + 1}`}
-                              className="w-full h-full object-cover"
-                            />
-                          ) : (
-                            <video
-                              src={preview.url}
-                              muted
-                              playsInline
-                              className="w-full h-full object-cover"
-                            />
-                          )}
+                          {preview.url ? (
+                            mediaType === 'photo' ? (
+                              <img
+                                src={preview.url}
+                                alt={`Preview ${i + 1}`}
+                                className="w-full h-full object-cover"
+                              />
+                            ) : (
+                              <video
+                                src={preview.url}
+                                muted
+                                playsInline
+                                className="w-full h-full object-cover"
+                              />
+                            )
+                          ) : null}
                           <button
                             type="button"
                             disabled={isUploading}

@@ -187,13 +187,19 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
               {/* Media Thumbnail Container */}
               <div className="relative aspect-[4/3] bg-black/40 overflow-hidden">
                 {item.type === 'photo' ? (
-                  <img
-                    src={item.url}
-                    alt={item.title}
-                    referrerPolicy="no-referrer"
-                    loading={index < 3 ? 'eager' : 'lazy'}
-                    className="w-full h-full object-cover transition-transform duration-700 ease-out group-hover:scale-105"
-                  />
+                  item.url ? (
+                    <img
+                      src={item.url}
+                      alt={item.title}
+                      referrerPolicy="no-referrer"
+                      loading={index < 3 ? 'eager' : 'lazy'}
+                      className="w-full h-full object-cover transition-transform duration-700 ease-out group-hover:scale-105"
+                    />
+                  ) : (
+                    <div className="w-full h-full bg-gradient-to-br from-[#3b0512] via-[#24030a] to-[#120105] flex items-center justify-center p-4 text-center">
+                      <Camera className="w-8 h-8 text-rose-400/60" />
+                    </div>
+                  )
                 ) : (
                   <div className="relative w-full h-full">
                     {item.thumbnailUrl ? (

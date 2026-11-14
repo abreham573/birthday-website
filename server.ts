@@ -73,7 +73,7 @@ function saveMemories(memories: ServerMemoryItem[]) {
 
 async function startServer() {
   const app = express();
-  const PORT = parseInt(process.env.PORT || '3000', 10);
+  const PORT = 3000;
   const isProduction = process.env.NODE_ENV === 'production';
 
   app.use(express.json({ limit: '50mb' }));
@@ -194,7 +194,7 @@ async function startServer() {
   // In development, hook up Vite middleware
   if (!isProduction) {
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: { middlewareMode: true, hmr: false },
       appType: 'spa',
     });
     app.use(vite.middlewares);

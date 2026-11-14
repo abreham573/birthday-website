@@ -130,14 +130,16 @@ export const LightboxModal: React.FC<LightboxModalProps> = ({
       <div className="relative max-w-4xl w-full max-h-[92vh] flex flex-col bg-[#1c0207] border border-rose-500/20 rounded-3xl overflow-hidden shadow-2xl">
         {/* Media Container */}
         <div className="relative flex-1 bg-black/40 flex items-center justify-center min-h-[300px] max-h-[60vh] sm:max-h-[65vh] overflow-hidden">
-          {loadingMedia ? (
+          {loadingMedia || (!item.url && item.isChunked && !mediaError) ? (
             <div className="flex flex-col items-center gap-3 p-8 text-rose-200/80">
               <Loader2 className="w-8 h-8 animate-spin text-rose-400" />
               <span className="text-xs">Loading memory...</span>
             </div>
-          ) : mediaError ? (
+          ) : mediaError || !item.url ? (
             <div className="p-8 text-center max-w-md">
-              <p className="text-sm text-rose-200">{mediaError}</p>
+              <p className="text-sm text-rose-200">
+                {mediaError || 'This memory is unavailable right now.'}
+              </p>
             </div>
           ) : item.type === 'photo' ? (
             <img
