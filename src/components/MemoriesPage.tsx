@@ -176,16 +176,20 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
           </p>
         </div>
       ) : (
-        /* Grid of Cloud-Persisted Memories */
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5 sm:gap-6">
+        /* Masonry Gallery of Cloud-Persisted Memories (Uncropped Full Photos) */
+        <div className="columns-1 sm:columns-2 lg:columns-3 gap-5 sm:gap-6">
           {filteredMemories.map((item, index) => (
             <article
               key={item.id}
               onClick={() => onSelectMemory(item)}
-              className="romantic-card rounded-2xl overflow-hidden cursor-pointer group romantic-card-hover flex flex-col"
+              className="romantic-card rounded-2xl overflow-hidden cursor-pointer group romantic-card-hover flex flex-col break-inside-avoid mb-5 sm:mb-6"
             >
               {/* Media Thumbnail Container */}
-              <div className="relative aspect-[4/3] bg-black/40 overflow-hidden">
+              <div
+                className={`relative bg-black/50 overflow-hidden ${
+                  item.type === 'video' ? 'aspect-video' : ''
+                }`}
+              >
                 {item.type === 'photo' ? (
                   item.url ? (
                     <img
@@ -193,10 +197,10 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
                       alt={item.title}
                       referrerPolicy="no-referrer"
                       loading={index < 3 ? 'eager' : 'lazy'}
-                      className="w-full h-full object-cover transition-transform duration-700 ease-out group-hover:scale-105"
+                      className="w-full h-auto max-h-[540px] object-contain mx-auto block transition-transform duration-700 ease-out group-hover:scale-[1.02]"
                     />
                   ) : (
-                    <div className="w-full h-full bg-gradient-to-br from-[#3b0512] via-[#24030a] to-[#120105] flex items-center justify-center p-4 text-center">
+                    <div className="w-full aspect-[4/3] bg-gradient-to-br from-[#3b0512] via-[#24030a] to-[#120105] flex items-center justify-center p-4 text-center">
                       <Camera className="w-8 h-8 text-rose-400/60" />
                     </div>
                   )
@@ -276,7 +280,7 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
           {isOwner && (
             <div
               onClick={onOpenAddModal}
-              className="border-2 border-dashed border-rose-500/25 hover:border-rose-400/50 rounded-2xl p-8 flex flex-col items-center justify-center text-center cursor-pointer bg-rose-950/20 hover:bg-rose-950/35 transition-all min-h-[300px] group"
+              className="border-2 border-dashed border-rose-500/25 hover:border-rose-400/50 rounded-2xl p-8 flex flex-col items-center justify-center text-center cursor-pointer bg-rose-950/20 hover:bg-rose-950/35 transition-all min-h-[280px] group break-inside-avoid mb-5 sm:mb-6"
             >
               <div className="w-14 h-14 rounded-full bg-rose-900/40 text-rose-300 group-hover:text-white group-hover:bg-rose-600/80 transition-all flex items-center justify-center mb-3">
                 <Plus className="w-6 h-6" />
