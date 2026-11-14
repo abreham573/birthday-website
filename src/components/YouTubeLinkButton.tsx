@@ -1,5 +1,6 @@
 import React from 'react';
 import { Youtube, ExternalLink, Music2 } from 'lucide-react';
+import austinCover from '../assets/images/austin_mahone_cover_1794420838531.jpg';
 
 export const YouTubeLinkButton: React.FC = () => {
   const YOUTUBE_URL = 'https://www.youtube.com/watch?v=ZAC_k1HUyE4';
@@ -19,7 +20,7 @@ export const YouTubeLinkButton: React.FC = () => {
         {/* Album Artwork Thumbnail */}
         <div className="relative w-10 h-10 sm:w-11 sm:h-11 rounded-full overflow-hidden shrink-0 border border-rose-400/30 group-hover:scale-105 transition-transform">
           <img
-            src="/src/assets/images/austin_mahone_cover_1794420838531.jpg"
+            src={austinCover}
             alt="Austin Mahone - All I Ever Need Cover"
             className="w-full h-full object-cover"
           />

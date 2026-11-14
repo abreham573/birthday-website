@@ -1,6 +1,7 @@
 import React from 'react';
 import { ExternalLink, Heart, Sparkles, Youtube, Camera } from 'lucide-react';
 import confetti from 'canvas-confetti';
+import austinCover from '../assets/images/austin_mahone_cover_1794420838531.jpg';
 
 interface SongPageProps {
   onNavigateToMemories: () => void;
@@ -95,7 +96,7 @@ export const SongPage: React.FC<SongPageProps> = ({
           >
             <div className="relative w-48 h-48 sm:w-56 sm:h-56 rounded-3xl shadow-2xl border-2 border-rose-500/30 overflow-hidden group-hover:border-rose-400/60 transition-all">
               <img
-                src="/src/assets/images/austin_mahone_cover_1794420838531.jpg"
+                src={austinCover}
                 alt="Austin Mahone - All I Ever Need cover art"
                 className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
               />
