@@ -22,6 +22,7 @@ import {
   getCachedGateConfigFallback,
   fetchMemoriesFromFirestore,
   deleteMemoryFromFirestore,
+  updateMemoryMetadataInFirestore,
   fetchLetterFromFirestore,
   saveLetterToFirestore,
   resolveChunkedMemoryUrl,
@@ -257,6 +258,32 @@ export default function App() {
     ]);
   };
 
+  // Update title/caption/date/tag on an existing memory
+  const handleUpdateMemory = async (params: {
+    id: string;
+    title: string;
+    caption: string;
+    date: string;
+    tag: string;
+  }) => {
+    if (!isOwner) {
+      throw new Error('Please sign in with the creator Google account to edit captions.');
+    }
+    const updated = await updateMemoryMetadataInFirestore({
+      memoryId: params.id,
+      title: params.title,
+      caption: params.caption,
+      date: params.date,
+      tag: params.tag,
+    });
+    setMemories((prev) =>
+      prev.map((m) => (m.id === params.id ? { ...m, ...updated } : m))
+    );
+    setSelectedLightboxItem((prev) =>
+      prev && prev.id === params.id ? { ...prev, ...updated } : prev
+    );
+  };
+
   // Delete memory permanently from Firestore
   const handleDeleteMemory = async (id: string) => {
     if (!isOwner) return;
@@ -358,6 +385,7 @@ export default function App() {
                 onOpenAddModal={() => setIsAddModalOpen(true)}
                 onSelectMemory={(item) => setSelectedLightboxItem(item)}
                 onResolveMedia={handleResolveMedia}
+                onUpdateMemory={handleUpdateMemory}
                 onNavigateToLetter={() => handleSelectTab('letter')}
                 onNavigateToSong={() => handleSelectTab('song')}
               />

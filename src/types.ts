@@ -22,6 +22,8 @@ export interface LoveLetterData {
   closing: string;
   signature: string;
   anniversaryDate?: string;
+  bottomPhotoUrl?: string;
+  bottomPhotoCaption?: string;
 }
 
 export interface AccessGateConfig {

@@ -24,6 +24,7 @@ import {
   saveCachedMemoriesList,
 } from './mediaCache';
 import { AccessGateConfig, LoveLetterData, MemoryItem } from '../types';
+import { DEFAULT_LOVE_LETTER } from '../data/defaultLetter';
 
 const CHUNK_SIZE = 650000;
 const MAX_CHUNKS = 40;
@@ -473,6 +474,53 @@ export async function deleteMemoryFromFirestore(memoryId: string): Promise<void>
   }
 }
 
+export async function updateMemoryMetadataInFirestore(params: {
+  memoryId: string;
+  title: string;
+  caption: string;
+  date: string;
+  tag: string;
+}): Promise<{ title: string; caption: string; date: string; tag: string }> {
+  const { memoryId, title, caption, date, tag } = params;
+  const path = `memories/${memoryId}`;
+
+  const safeTitle = title.trim().slice(0, 160) || 'My Beautiful Tsi';
+  const safeCaption = caption.trim().slice(0, 1000);
+  const safeDate = date.trim().slice(0, 80) || 'Special Moment';
+  const safeTag = tag.trim().slice(0, 60) || 'Birthday Special';
+
+  try {
+    await updateDoc(doc(db, 'memories', memoryId), {
+      title: safeTitle,
+      caption: safeCaption,
+      date: safeDate,
+      tag: safeTag,
+      updatedAt: serverTimestamp(),
+    });
+
+    // Keep local IndexedDB cache in sync too
+    const cached = await getCachedMemoriesList();
+    if (cached && cached.length > 0) {
+      await saveCachedMemoriesList(
+        cached.map((item) =>
+          item.id === memoryId
+            ? { ...item, title: safeTitle, caption: safeCaption, date: safeDate, tag: safeTag }
+            : item
+        )
+      );
+    }
+
+    return {
+      title: safeTitle,
+      caption: safeCaption,
+      date: safeDate,
+      tag: safeTag,
+    };
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, path);
+  }
+}
+
 export async function fetchLetterFromFirestore(): Promise<LoveLetterData | null> {
   const path = 'letter/birthday';
   try {
@@ -487,6 +535,14 @@ export async function fetchLetterFromFirestore(): Promise<LoveLetterData | null>
       closing: data.closing || 'With all my love,',
       signature: data.signature || 'Yours ❤️',
       anniversaryDate: data.anniversaryDate || 'On Your Special Birthday',
+      bottomPhotoUrl:
+        typeof data.bottomPhotoUrl === 'string' && data.bottomPhotoUrl.trim().length > 0
+          ? data.bottomPhotoUrl
+          : DEFAULT_LOVE_LETTER.bottomPhotoUrl,
+      bottomPhotoCaption:
+        typeof data.bottomPhotoCaption === 'string' && data.bottomPhotoCaption.trim().length > 0
+          ? data.bottomPhotoCaption
+          : DEFAULT_LOVE_LETTER.bottomPhotoCaption,
     };
     await saveCachedLetter(letter);
     return letter;
@@ -496,7 +552,13 @@ export async function fetchLetterFromFirestore(): Promise<LoveLetterData | null>
 }
 
 export async function getCachedLetterFallback(): Promise<LoveLetterData | null> {
-  return getCachedLetter();
+  const cached = await getCachedLetter();
+  if (!cached) return null;
+  return {
+    ...cached,
+    bottomPhotoUrl: cached.bottomPhotoUrl || DEFAULT_LOVE_LETTER.bottomPhotoUrl,
+    bottomPhotoCaption: cached.bottomPhotoCaption || DEFAULT_LOVE_LETTER.bottomPhotoCaption,
+  };
 }
 
 export async function saveLetterToFirestore(
@@ -514,6 +576,17 @@ export async function saveLetterToFirestore(
     paragraphs.push('Happy Birthday, Tsi ❤️');
   }
 
+  const bottomPhotoUrl = (
+    letter.bottomPhotoUrl ||
+    DEFAULT_LOVE_LETTER.bottomPhotoUrl ||
+    ''
+  ).slice(0, 900000);
+  const bottomPhotoCaption = (
+    letter.bottomPhotoCaption ??
+    DEFAULT_LOVE_LETTER.bottomPhotoCaption ??
+    ''
+  ).slice(0, 300);
+
   try {
     const existing = await getDoc(letterRef);
     if (!existing.exists()) {
@@ -525,6 +598,8 @@ export async function saveLetterToFirestore(
         closing: (letter.closing || 'With all my love,').slice(0, 120),
         signature: (letter.signature || 'Yours ❤️').slice(0, 120),
         anniversaryDate: (letter.anniversaryDate || 'On Your Special Birthday').slice(0, 80),
+        bottomPhotoUrl,
+        bottomPhotoCaption,
         authorId,
         updatedAt: serverTimestamp(),
       });
@@ -537,10 +612,17 @@ export async function saveLetterToFirestore(
         closing: (letter.closing || 'With all my love,').slice(0, 120),
         signature: (letter.signature || 'Yours ❤️').slice(0, 120),
         anniversaryDate: (letter.anniversaryDate || 'On Your Special Birthday').slice(0, 80),
+        bottomPhotoUrl,
+        bottomPhotoCaption,
         updatedAt: serverTimestamp(),
       });
     }
-    await saveCachedLetter({ ...letter, paragraphs });
+    await saveCachedLetter({
+      ...letter,
+      paragraphs,
+      bottomPhotoUrl,
+      bottomPhotoCaption,
+    });
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, path);
   }

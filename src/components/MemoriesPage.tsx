@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { motion, AnimatePresence } from 'motion/react';
+import { motion } from 'motion/react';
 import {
   Play,
   Pause,
@@ -13,6 +13,8 @@ import {
   Maximize2,
   Loader2,
   Film,
+  Edit3,
+  Check,
 } from 'lucide-react';
 import { MemoryItem } from '../types';
 
@@ -23,6 +25,13 @@ interface MemoriesPageProps {
   onOpenAddModal: () => void;
   onSelectMemory: (item: MemoryItem) => void;
   onResolveMedia?: (id: string) => Promise<string>;
+  onUpdateMemory?: (params: {
+    id: string;
+    title: string;
+    caption: string;
+    date: string;
+    tag: string;
+  }) => Promise<void>;
   onNavigateToLetter: () => void;
   onNavigateToSong: () => void;
 }
@@ -47,6 +56,7 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
   onOpenAddModal,
   onSelectMemory,
   onResolveMedia,
+  onUpdateMemory,
   onNavigateToLetter,
 }) => {
   const [filter, setFilter] = useState<'all' | 'photo' | 'video' | 'birthday'>('all');
@@ -55,6 +65,16 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
   const [loadingVideoId, setLoadingVideoId] = useState<string | null>(null);
   const [videoError, setVideoError] = useState<string | null>(null);
 
+  // Inline caption editor state (owner only)
+  const [isEditingCaption, setIsEditingCaption] = useState<boolean>(false);
+  const [editTitle, setEditTitle] = useState<string>('');
+  const [editDate, setEditDate] = useState<string>('');
+  const [editTag, setEditTag] = useState<string>('Birthday Special');
+  const [editCaption, setEditCaption] = useState<string>('');
+  const [isSavingCaption, setIsSavingCaption] = useState<boolean>(false);
+  const [captionSaveError, setCaptionSaveError] = useState<string | null>(null);
+
+  const filmstripRef = useRef<HTMLDivElement | null>(null);
   const thumbRefs = useRef<(HTMLButtonElement | null)[]>([]);
   const isDraggingRef = useRef<boolean>(false);
   const showAddButton = isOwner || (!isLoading && memories.length === 0);
@@ -76,6 +96,46 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
   }, [filter, filteredMemories.length]);
 
   const activeItem = filteredMemories[currentIndex] ?? null;
+
+  // Close inline caption editor whenever switching slides
+  useEffect(() => {
+    setIsEditingCaption(false);
+    setCaptionSaveError(null);
+  }, [activeItem?.id]);
+
+  const handleStartEditCaption = () => {
+    if (!activeItem) return;
+    setIsAutoPlaying(false);
+    setEditTitle(activeItem.title);
+    setEditDate(activeItem.date);
+    setEditTag(activeItem.tag || 'Birthday Special');
+    setEditCaption(activeItem.caption || '');
+    setCaptionSaveError(null);
+    setIsEditingCaption(true);
+  };
+
+  const handleSaveCaption = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!activeItem || !onUpdateMemory) return;
+    setCaptionSaveError(null);
+    setIsSavingCaption(true);
+    try {
+      await onUpdateMemory({
+        id: activeItem.id,
+        title: editTitle,
+        caption: editCaption,
+        date: editDate,
+        tag: editTag,
+      });
+      setIsEditingCaption(false);
+    } catch (err) {
+      setCaptionSaveError(
+        err instanceof Error ? err.message : 'Could not save caption right now.'
+      );
+    } finally {
+      setIsSavingCaption(false);
+    }
+  };
 
   const paginate = useCallback(
     (delta: number) => {
@@ -128,11 +188,14 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [paginate]);
 
-  // Keep active filmstrip thumbnail centered cleanly
+  // Keep active filmstrip thumbnail centered horizontally without scrolling the page vertically
   useEffect(() => {
+    const container = filmstripRef.current;
     const el = thumbRefs.current[currentIndex];
-    if (el) {
-      el.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
+    if (container && el) {
+      const targetLeft =
+        el.offsetLeft - container.clientWidth / 2 + el.clientWidth / 2;
+      container.scrollTo({ left: Math.max(0, targetLeft), behavior: 'smooth' });
     }
   }, [currentIndex]);
 
@@ -363,7 +426,7 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
 
           {/* 3D Perspective Coverflow Stage */}
           <div
-            className="relative h-[380px] sm:h-[470px] md:h-[520px] flex items-center justify-center overflow-visible select-none"
+            className="relative h-[385px] sm:h-[490px] md:h-[550px] flex items-center justify-center overflow-visible select-none"
             style={{ perspective: '1200px' }}
           >
             {filteredMemories.map((item, idx) => {
@@ -438,7 +501,7 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
                     transformStyle: 'preserve-3d',
                     zIndex,
                   }}
-                  className={`absolute w-[82%] sm:w-[68%] md:w-[60%] max-w-2xl h-[340px] sm:h-[430px] md:h-[480px] rounded-3xl overflow-hidden border shadow-2xl touch-pan-y ${
+                  className={`absolute w-[88%] sm:w-[74%] md:w-[66%] max-w-3xl h-[370px] sm:h-[470px] md:h-[530px] rounded-3xl overflow-hidden border shadow-2xl touch-pan-y ${
                     isActive
                       ? 'border-rose-400/45 bg-[#160206] shadow-black/80 cursor-grab active:cursor-grabbing'
                       : 'border-rose-500/20 bg-[#120104]/90 shadow-black/60 cursor-pointer'
@@ -462,7 +525,7 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
                     )}
 
                   {/* Card Media Content */}
-                  <div className="w-full h-full flex items-center justify-center bg-black/75 p-2 sm:p-3">
+                  <div className="w-full h-full flex items-center justify-center bg-black/75 p-1 sm:p-2">
                     {item.type === 'photo' ? (
                       item.url ? (
                         <img
@@ -596,43 +659,11 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
             </div>
           )}
 
-          {/* Active Slide Caption Card */}
-          <div className="max-w-2xl mx-auto romantic-card rounded-2xl p-4 sm:p-5 border border-rose-500/20 text-center">
-            <AnimatePresence mode="wait">
-              <motion.div
-                key={`caption-${activeItem.id}`}
-                initial={{ opacity: 0, y: 6 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -6 }}
-                transition={{ duration: 0.2 }}
-              >
-                <div className="flex items-center justify-center gap-2 text-[11px] text-rose-300/75 mb-1">
-                  <span>{activeItem.date}</span>
-                  <span aria-hidden="true">·</span>
-                  <span className="uppercase tracking-wider font-semibold text-rose-300">
-                    {activeItem.type}
-                  </span>
-                  {activeItem.type === 'photo' && (
-                    <>
-                      <span aria-hidden="true">·</span>
-                      <span>Tap center photo to zoom</span>
-                    </>
-                  )}
-                </div>
-
-                <h2 className="font-serif-cormorant text-xl sm:text-2xl font-bold text-white">
-                  {activeItem.title}
-                </h2>
-
-                <p className="text-xs sm:text-sm text-rose-200/85 mt-1 font-light leading-relaxed">
-                  {activeItem.caption}
-                </p>
-              </motion.div>
-            </AnimatePresence>
-          </div>
-
           {/* Compact Filmstrip Thumbnail Bar */}
-          <div className="flex items-center justify-start sm:justify-center gap-2.5 overflow-x-auto py-2 px-1">
+          <div
+            ref={filmstripRef}
+            className="relative flex items-center justify-start sm:justify-center gap-2.5 overflow-x-auto py-2 px-1"
+          >
             {filteredMemories.map((item, idx) => {
               const isActive = idx === currentIndex;
               return (
@@ -693,6 +724,149 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
                 <Plus className="w-4 h-4" />
                 <span className="text-[9px] font-medium">Add</span>
               </button>
+            )}
+          </div>
+
+          {/* Full Active Slide Caption Card at the Bottom */}
+          <div className="max-w-2xl mx-auto romantic-card rounded-2xl p-4 sm:p-5 border border-rose-500/20 text-center">
+            {isEditingCaption && isOwner ? (
+              <form onSubmit={handleSaveCaption} className="space-y-3 text-left">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[11px] font-semibold uppercase tracking-wider text-rose-300">
+                    Write Your Own Caption
+                  </span>
+                  <span className="text-[11px] text-rose-300/60">
+                    Saves directly to cloud
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                  <div>
+                    <label className="block text-[11px] text-rose-300/80 mb-1">
+                      Title
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      maxLength={160}
+                      value={editTitle}
+                      onChange={(e) => setEditTitle(e.target.value)}
+                      className="w-full bg-black/45 border border-rose-500/30 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-rose-400"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] text-rose-300/80 mb-1">
+                      Date / Occasion
+                    </label>
+                    <input
+                      type="text"
+                      maxLength={80}
+                      value={editDate}
+                      onChange={(e) => setEditDate(e.target.value)}
+                      className="w-full bg-black/45 border border-rose-500/30 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-rose-400"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] text-rose-300/80 mb-1">
+                      Category
+                    </label>
+                    <select
+                      value={editTag}
+                      onChange={(e) => setEditTag(e.target.value)}
+                      className="w-full bg-[#1b0207] border border-rose-500/30 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-rose-400"
+                    >
+                      <option value="Birthday Special">Birthday Special</option>
+                      <option value="Sweet Moments">Sweet Moments</option>
+                      <option value="Our Firsts">Our Firsts</option>
+                      <option value="Date Nights">Date Nights</option>
+                      <option value="Adventures">Adventures</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-[11px] text-rose-300/80 mb-1">
+                    Your Caption
+                  </label>
+                  <textarea
+                    rows={3}
+                    maxLength={1000}
+                    value={editCaption}
+                    onChange={(e) => setEditCaption(e.target.value)}
+                    placeholder="Write your own words for this photo or video..."
+                    className="w-full bg-black/45 border border-rose-500/30 rounded-xl px-3 py-2 text-xs sm:text-sm text-white placeholder:text-rose-300/35 focus:outline-none focus:border-rose-400 resize-y"
+                  />
+                </div>
+
+                {captionSaveError && (
+                  <p className="text-xs text-red-300 bg-red-950/60 border border-red-500/30 rounded-lg p-2">
+                    {captionSaveError}
+                  </p>
+                )}
+
+                <div className="flex items-center justify-end gap-2">
+                  <button
+                    type="button"
+                    disabled={isSavingCaption}
+                    onClick={() => {
+                      setIsEditingCaption(false);
+                      setCaptionSaveError(null);
+                    }}
+                    className="px-3.5 py-2 text-xs font-medium text-rose-300 hover:text-white rounded-xl transition-colors cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={isSavingCaption}
+                    className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-gradient-to-r from-rose-600 to-red-600 hover:from-rose-500 hover:to-red-500 rounded-xl transition-colors whitespace-nowrap cursor-pointer disabled:opacity-60"
+                  >
+                    {isSavingCaption ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <Check className="w-3.5 h-3.5" />
+                    )}
+                    <span>{isSavingCaption ? 'Saving...' : 'Save Caption'}</span>
+                  </button>
+                </div>
+              </form>
+            ) : (
+              <div key={`caption-${activeItem.id}`}>
+                <div className="flex flex-wrap items-center justify-center gap-2 text-[11px] text-rose-300/75 mb-1">
+                  <span>{activeItem.date}</span>
+                  <span aria-hidden="true">·</span>
+                  <span className="uppercase tracking-wider font-semibold text-rose-300">
+                    {activeItem.type}
+                  </span>
+                  {activeItem.type === 'photo' && (
+                    <>
+                      <span aria-hidden="true">·</span>
+                      <span>Tap center photo to zoom</span>
+                    </>
+                  )}
+                  {isOwner && onUpdateMemory && (
+                    <>
+                      <span aria-hidden="true">·</span>
+                      <button
+                        type="button"
+                        onClick={handleStartEditCaption}
+                        className="inline-flex items-center gap-1 text-amber-200 hover:text-amber-100 font-medium underline underline-offset-2 cursor-pointer"
+                      >
+                        <Edit3 className="w-3 h-3" />
+                        <span>Edit Caption</span>
+                      </button>
+                    </>
+                  )}
+                </div>
+
+                <h2 className="font-serif-cormorant text-xl sm:text-2xl font-bold text-white">
+                  {activeItem.title}
+                </h2>
+
+                <p className="text-xs sm:text-sm text-rose-200/90 mt-1.5 font-light leading-relaxed">
+                  {activeItem.caption || 'A cherished moment of my love, Tsi.'}
+                </p>
+              </div>
             )}
           </div>
         </section>

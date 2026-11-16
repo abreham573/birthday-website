@@ -80,7 +80,9 @@ service cloud.firestore {
         ])
         && data.keys().hasOnly([
           'recipient', 'notice', 'salutation', 'paragraphs',
-          'closing', 'signature', 'anniversaryDate', 'authorId', 'updatedAt'
+          'closing', 'signature', 'anniversaryDate',
+          'bottomPhotoUrl', 'bottomPhotoCaption',
+          'authorId', 'updatedAt'
         ])
         && data.recipient is string && data.recipient.size() >= 1 && data.recipient.size() <= 80
         && data.notice is string && data.notice.size() <= 400
@@ -90,6 +92,8 @@ service cloud.firestore {
         && data.closing is string && data.closing.size() >= 1 && data.closing.size() <= 120
         && data.signature is string && data.signature.size() >= 1 && data.signature.size() <= 120
         && data.anniversaryDate is string && data.anniversaryDate.size() <= 80
+        && (!('bottomPhotoUrl' in data) || (data.bottomPhotoUrl is string && data.bottomPhotoUrl.size() <= 900000))
+        && (!('bottomPhotoCaption' in data) || (data.bottomPhotoCaption is string && data.bottomPhotoCaption.size() <= 300))
         && isValidId(data.authorId) && data.authorId == request.auth.uid
         && data.updatedAt is timestamp;
     }
@@ -172,7 +176,8 @@ service cloud.firestore {
         && incoming().updatedAt == request.time
         && incoming().diff(existing()).affectedKeys().hasOnly([
           'recipient', 'notice', 'salutation', 'paragraphs',
-          'closing', 'signature', 'anniversaryDate', 'updatedAt'
+          'closing', 'signature', 'anniversaryDate',
+          'bottomPhotoUrl', 'bottomPhotoCaption', 'updatedAt'
         ]);
 
       allow delete: if false;

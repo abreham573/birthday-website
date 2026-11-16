@@ -159,6 +159,16 @@
           "maxLength": 80,
           "description": "Special occasion label."
         },
+        "bottomPhotoUrl": {
+          "type": "string",
+          "maxLength": 900000,
+          "description": "Optional photo path or data URL pinned at the bottom of the love letter."
+        },
+        "bottomPhotoCaption": {
+          "type": "string",
+          "maxLength": 300,
+          "description": "Optional caption displayed beneath the letter's bottom photo."
+        },
         "authorId": {
           "type": "string",
           "pattern": "^[a-zA-Z0-9_\\-]+$",

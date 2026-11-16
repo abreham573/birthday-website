@@ -19,4 +19,6 @@ export const DEFAULT_LOVE_LETTER: LoveLetterData = {
   closing: 'With all my love,',
   signature: 'Yours ❤️',
   anniversaryDate: 'On Your Special Birthday',
+  bottomPhotoUrl: '/assets/aistudio/photo_2026-11-16_17.28.58_243765c9.jpeg',
+  bottomPhotoCaption: 'OWW MY SHAYLA 🥹🥹',
 };
