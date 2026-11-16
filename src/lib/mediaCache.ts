@@ -1,4 +1,4 @@
-import { LoveLetterData, MemoryItem } from '../types';
+import { AccessGateConfig, LoveLetterData, MemoryItem } from '../types';
 
 const DB_NAME = 'tsi_birthday_cache_v1';
 const DB_VERSION = 1;
@@ -127,6 +127,36 @@ export async function saveCachedLetter(letter: LoveLetterData): Promise<void> {
     await new Promise<void>((resolve) => {
       const tx = db.transaction(META_STORE, 'readwrite');
       tx.objectStore(META_STORE).put(letter, 'love_letter');
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => resolve();
+    });
+  } catch {
+    // Ignore
+  }
+}
+
+export async function getCachedGateConfig(): Promise<AccessGateConfig | null> {
+  try {
+    const db = await openCacheDb();
+    return await new Promise((resolve) => {
+      const tx = db.transaction(META_STORE, 'readonly');
+      const req = tx.objectStore(META_STORE).get('access_gate');
+      req.onsuccess = () => {
+        resolve(req.result ? (req.result as AccessGateConfig) : null);
+      };
+      req.onerror = () => resolve(null);
+    });
+  } catch {
+    return null;
+  }
+}
+
+export async function saveCachedGateConfig(config: AccessGateConfig): Promise<void> {
+  try {
+    const db = await openCacheDb();
+    await new Promise<void>((resolve) => {
+      const tx = db.transaction(META_STORE, 'readwrite');
+      tx.objectStore(META_STORE).put(config, 'access_gate');
       tx.oncomplete = () => resolve();
       tx.onerror = () => resolve();
     });

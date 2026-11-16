@@ -195,6 +195,56 @@
         }
       },
       "required": ["role"]
+    },
+    "AccessGate": {
+      "title": "AccessGate",
+      "description": "Front-page password gate configuration (SHA-256 password hash, hint, and welcome text).",
+      "type": "object",
+      "properties": {
+        "passwordHash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$",
+          "minLength": 64,
+          "maxLength": 64,
+          "description": "SHA-256 hex digest of the normalized unlock password."
+        },
+        "hint": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300,
+          "description": "Romantic clue/hint shown on the front page."
+        },
+        "welcomeTitle": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160,
+          "description": "Headline displayed on the front password page."
+        },
+        "welcomeSubtitle": {
+          "type": "string",
+          "maxLength": 400,
+          "description": "Subtitle message displayed on the front password page."
+        },
+        "authorId": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "maxLength": 128,
+          "description": "UID of the owner who updated the gate."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the gate config was last updated."
+        }
+      },
+      "required": [
+        "passwordHash",
+        "hint",
+        "welcomeTitle",
+        "welcomeSubtitle",
+        "authorId",
+        "updatedAt"
+      ]
     }
   },
   "firestore": {
@@ -209,6 +259,10 @@
     "/letter/{letterId}": {
       "schema": { "$ref": "#/entities/LoveLetter" },
       "description": "Birthday love letter document (id 'birthday'), publicly readable and editable only by verified owner/admin."
+    },
+    "/gate/{gateId}": {
+      "schema": { "$ref": "#/entities/AccessGate" },
+      "description": "Front-page password and hint configuration document (id 'config'), publicly readable and editable only by verified owner/admin."
     },
     "/admins/{userId}": {
       "schema": { "$ref": "#/entities/AdminRecord" },

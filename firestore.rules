@@ -94,6 +94,25 @@ service cloud.firestore {
         && data.updatedAt is timestamp;
     }
 
+    function isValidGate(data) {
+      return data.keys().hasAll([
+          'passwordHash', 'hint', 'welcomeTitle', 'welcomeSubtitle',
+          'authorId', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'passwordHash', 'hint', 'welcomeTitle', 'welcomeSubtitle',
+          'authorId', 'updatedAt'
+        ])
+        && data.passwordHash is string
+        && data.passwordHash.size() == 64
+        && data.passwordHash.matches('^[a-f0-9]{64}$')
+        && data.hint is string && data.hint.size() >= 1 && data.hint.size() <= 300
+        && data.welcomeTitle is string && data.welcomeTitle.size() >= 1 && data.welcomeTitle.size() <= 160
+        && data.welcomeSubtitle is string && data.welcomeSubtitle.size() <= 400
+        && isValidId(data.authorId) && data.authorId == request.auth.uid
+        && data.updatedAt is timestamp;
+    }
+
     // Public Birthday Gallery Memories (Readable by Tsi & visitors, writable only by verified owner)
     match /memories/{memoryId} {
       allow get: if isValidId(memoryId);
@@ -154,6 +173,30 @@ service cloud.firestore {
         && incoming().diff(existing()).affectedKeys().hasOnly([
           'recipient', 'notice', 'salutation', 'paragraphs',
           'closing', 'signature', 'anniversaryDate', 'updatedAt'
+        ]);
+
+      allow delete: if false;
+    }
+
+    // Front-Page Password Gate Configuration (Publicly readable config, editable only by verified owner)
+    match /gate/{gateId} {
+      allow get: if isValidId(gateId) && gateId == 'config';
+      allow list: if false;
+
+      allow create: if isAdmin()
+        && isValidId(gateId)
+        && gateId == 'config'
+        && isValidGate(incoming())
+        && incoming().updatedAt == request.time;
+
+      allow update: if isAdmin()
+        && isValidId(gateId)
+        && gateId == 'config'
+        && isValidGate(incoming())
+        && incoming().authorId == existing().authorId
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'passwordHash', 'hint', 'welcomeTitle', 'welcomeSubtitle', 'updatedAt'
         ]);
 
       allow delete: if false;

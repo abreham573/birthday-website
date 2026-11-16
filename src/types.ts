@@ -23,3 +23,10 @@ export interface LoveLetterData {
   signature: string;
   anniversaryDate?: string;
 }
+
+export interface AccessGateConfig {
+  passwordHash: string;
+  hint: string;
+  welcomeTitle: string;
+  welcomeSubtitle: string;
+}

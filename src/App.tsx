@@ -5,8 +5,8 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { onAuthStateChanged, User } from 'firebase/auth';
-import { Lock, AlertTriangle, ExternalLink } from 'lucide-react';
-import { TabType, MemoryItem, LoveLetterData } from './types';
+import { Lock, AlertTriangle, ExternalLink, KeyRound } from 'lucide-react';
+import { TabType, MemoryItem, LoveLetterData, AccessGateConfig } from './types';
 import { INITIAL_MEMORIES } from './data/initialMemories';
 import { DEFAULT_LOVE_LETTER } from './data/defaultLetter';
 import {
@@ -16,6 +16,10 @@ import {
   signOutOwner,
 } from './lib/firebase';
 import {
+  DEFAULT_GATE_CONFIG,
+  fetchGateConfigFromFirestore,
+  saveGateConfigToFirestore,
+  getCachedGateConfigFallback,
   fetchMemoriesFromFirestore,
   deleteMemoryFromFirestore,
   fetchLetterFromFirestore,
@@ -26,6 +30,7 @@ import {
   isQuotaExceededError,
 } from './lib/memoriesService';
 import { BackgroundEffects } from './components/BackgroundEffects';
+import { PasswordGatePage } from './components/PasswordGatePage';
 import { Navbar } from './components/Navbar';
 import { MemoriesPage } from './components/MemoriesPage';
 import { LoveLetterPage } from './components/LoveLetterPage';
@@ -35,7 +40,21 @@ import { LightboxModal } from './components/LightboxModal';
 import { YouTubeLinkButton } from './components/YouTubeLinkButton';
 import { useHeartTapEffect } from './components/HeartTapEffect';
 
+const UNLOCK_STORAGE_KEY = 'tsi_birthday_unlocked';
+
 export default function App() {
+  // Front-page Password Gate state (starts locked on each new visit/session)
+  const [isUnlocked, setIsUnlocked] = useState<boolean>(() => {
+    try {
+      return sessionStorage.getItem(UNLOCK_STORAGE_KEY) === 'true';
+    } catch {
+      return false;
+    }
+  });
+  const [gateConfig, setGateConfig] = useState<AccessGateConfig>(DEFAULT_GATE_CONFIG);
+  const [isLoadingGate, setIsLoadingGate] = useState<boolean>(true);
+  const [adminRequested, setAdminRequested] = useState<boolean>(false);
+
   // Page Navigation: Memories (1st), Love Letter (2nd), Song (3rd)
   const [activeTab, setActiveTab] = useState<TabType>('memories');
 
@@ -62,6 +81,7 @@ export default function App() {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     if (params.get('admin') === '1' || params.get('admin') === 'true') {
+      setAdminRequested(true);
       setIsAddModalOpen(true);
     }
 
@@ -71,9 +91,44 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
-  // Fetch cloud-persisted memories & love letter on mount (with IndexedDB fallback on quota limit)
+  // Load Front-Page Password Gate config on mount
   useEffect(() => {
     let active = true;
+
+    async function loadGateConfig() {
+      try {
+        const cloudGate = await fetchGateConfigFromFirestore().catch(async (err) => {
+          if (isQuotaExceededError(err)) {
+            setQuotaExceeded(true);
+          }
+          console.error('Failed to load gate config from Firestore:', err);
+          return await getCachedGateConfigFallback();
+        });
+
+        if (!active) return;
+        if (cloudGate) {
+          setGateConfig(cloudGate);
+        }
+      } finally {
+        if (active) {
+          setIsLoadingGate(false);
+        }
+      }
+    }
+
+    loadGateConfig();
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  // Fetch cloud-persisted memories & love letter once unlocked (or signed in as owner)
+  useEffect(() => {
+    if (!isUnlocked && !isOwner) return;
+
+    let active = true;
+    setIsLoadingMemories(true);
 
     async function loadCloudData() {
       let hitQuota = false;
@@ -118,7 +173,28 @@ export default function App() {
     return () => {
       active = false;
     };
-  }, []);
+  }, [isUnlocked, isOwner]);
+
+  const handleUnlock = () => {
+    try {
+      sessionStorage.setItem(UNLOCK_STORAGE_KEY, 'true');
+    } catch {
+      // Ignore private browsing sessionStorage restrictions
+    }
+    setActiveTab('memories');
+    setIsUnlocked(true);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const handleLockFrontPage = () => {
+    try {
+      sessionStorage.removeItem(UNLOCK_STORAGE_KEY);
+    } catch {
+      // Ignore
+    }
+    setIsUnlocked(false);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
 
   const handleResolveMedia = useCallback(async (id: string): Promise<string> => {
     const resolvedUrl = await resolveChunkedMemoryUrl(id);
@@ -139,6 +215,24 @@ export default function App() {
 
   const handleSignOutOwner = async () => {
     await signOutOwner();
+  };
+
+  // Save custom front-page password & hint to Firestore
+  const handleSaveGateConfig = async (params: {
+    newPassword?: string;
+    hint: string;
+    welcomeTitle: string;
+    welcomeSubtitle: string;
+  }) => {
+    if (!user || !isOwner) {
+      throw new Error('Please sign in with the creator Google account to update the password.');
+    }
+    const updated = await saveGateConfigToFirestore({
+      ...params,
+      existingPasswordHash: gateConfig.passwordHash,
+      authorId: user.uid,
+    });
+    setGateConfig(updated);
   };
 
   // Save letter to Firestore when signed in as owner
@@ -191,120 +285,157 @@ export default function App() {
       {/* Floating Hidden Heart Particle Burst Canvas */}
       {renderFloatingHearts()}
 
-      {/* Header and Mobile Bottom Navigation */}
-      <Navbar
-        activeTab={activeTab}
-        onSelectTab={handleSelectTab}
-        onOpenAddModal={() => setIsAddModalOpen(true)}
-        heartCount={tapCount}
-        showAddButton={showAddControls}
-      />
-
-      {/* Main Pages: 1. Photos & Videos, 2. Love Letter, 3. Our Song */}
-      <main className="relative z-10">
-        {quotaExceeded && (
-          <div className="max-w-4xl mx-auto px-4 sm:px-6 pt-4">
-            <div className="rounded-2xl bg-amber-950/70 border border-amber-500/35 p-4 text-xs text-amber-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3 backdrop-blur-md">
-              <div className="flex items-start gap-2.5">
+      {!isUnlocked ? (
+        <main className="relative z-10">
+          {quotaExceeded && (
+            <div className="max-w-lg mx-auto px-4 pt-6">
+              <div className="rounded-2xl bg-amber-950/70 border border-amber-500/35 p-3.5 text-xs text-amber-100 flex items-start gap-2.5 backdrop-blur-md">
                 <AlertTriangle className="w-4 h-4 text-amber-300 shrink-0 mt-0.5" />
-                <div>
-                  <p className="font-semibold text-amber-200">
-                    Daily free Firestore read limit reached
-                  </p>
-                  <p className="text-amber-100/80 mt-0.5 leading-relaxed">
-                    Free daily database read units reset tomorrow. Cached items on this device still load offline, or you can upgrade your database quota in Firebase Console.
-                  </p>
+                <p className="text-amber-100/85 leading-relaxed">
+                  Daily free database read limit reached. Cached items on this device still work, and free reads reset tomorrow.
+                </p>
+              </div>
+            </div>
+          )}
+
+          <PasswordGatePage
+            gateConfig={gateConfig}
+            isLoadingGate={isLoadingGate}
+            isOwner={isOwner}
+            onUnlock={handleUnlock}
+            onSignInOwner={handleSignInOwner}
+            onSaveGateConfig={handleSaveGateConfig}
+            initialOpenAdmin={adminRequested}
+          />
+        </main>
+      ) : (
+        <>
+          {/* Header and Mobile Bottom Navigation */}
+          <Navbar
+            activeTab={activeTab}
+            onSelectTab={handleSelectTab}
+            onOpenAddModal={() => setIsAddModalOpen(true)}
+            heartCount={tapCount}
+            showAddButton={showAddControls}
+          />
+
+          {/* Main Pages: 1. Photos & Videos, 2. Love Letter, 3. Our Song */}
+          <main className="relative z-10">
+            {quotaExceeded && (
+              <div className="max-w-4xl mx-auto px-4 sm:px-6 pt-4">
+                <div className="rounded-2xl bg-amber-950/70 border border-amber-500/35 p-4 text-xs text-amber-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3 backdrop-blur-md">
+                  <div className="flex items-start gap-2.5">
+                    <AlertTriangle className="w-4 h-4 text-amber-300 shrink-0 mt-0.5" />
+                    <div>
+                      <p className="font-semibold text-amber-200">
+                        Daily free Firestore read limit reached
+                      </p>
+                      <p className="text-amber-100/80 mt-0.5 leading-relaxed">
+                        Free daily database read units reset tomorrow. Cached items on this device still load offline, or you can upgrade your database quota in Firebase Console.
+                      </p>
+                    </div>
+                  </div>
+                  {isOwner && (
+                    <a
+                      href="https://console.firebase.google.com/project/gen-lang-client-0717726151/firestore/databases/ai-studio-birthdaywebsite-b4d31af1-dbb6-455d-ae64-69fcad2dc0d4/data?openUpgradeDialog=true"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 border border-amber-400/40 text-amber-100 font-semibold whitespace-nowrap shrink-0 transition-colors"
+                    >
+                      <span>Upgrade Database</span>
+                      <ExternalLink className="w-3.5 h-3.5" />
+                    </a>
+                  )}
                 </div>
               </div>
-              {isOwner && (
-                <a
-                  href="https://console.firebase.google.com/project/gen-lang-client-0717726151/firestore/databases/ai-studio-birthdaywebsite-b4d31af1-dbb6-455d-ae64-69fcad2dc0d4/data?openUpgradeDialog=true"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 border border-amber-400/40 text-amber-100 font-semibold whitespace-nowrap shrink-0 transition-colors"
-                >
-                  <span>Upgrade Database</span>
-                  <ExternalLink className="w-3.5 h-3.5" />
-                </a>
-              )}
-            </div>
-          </div>
-        )}
+            )}
 
-        {activeTab === 'memories' && (
-          <MemoriesPage
-            memories={memories}
-            isLoading={isLoadingMemories}
+            {activeTab === 'memories' && (
+              <MemoriesPage
+                memories={memories}
+                isLoading={isLoadingMemories}
+                isOwner={isOwner}
+                onOpenAddModal={() => setIsAddModalOpen(true)}
+                onSelectMemory={(item) => setSelectedLightboxItem(item)}
+                onResolveMedia={handleResolveMedia}
+                onNavigateToLetter={() => handleSelectTab('letter')}
+                onNavigateToSong={() => handleSelectTab('song')}
+              />
+            )}
+
+            {activeTab === 'letter' && (
+              <LoveLetterPage
+                letterData={letterData}
+                isOwner={isOwner}
+                onSignInOwner={handleSignInOwner}
+                onUpdateLetter={handleUpdateLetter}
+                onHeartTap={triggerHeartBurst}
+                tapCount={tapCount}
+                onNavigateToMemories={() => handleSelectTab('memories')}
+                onNavigateToSong={() => handleSelectTab('song')}
+              />
+            )}
+
+            {activeTab === 'song' && (
+              <SongPage
+                onNavigateToMemories={() => handleSelectTab('memories')}
+                onNavigateToLetter={() => handleSelectTab('letter')}
+              />
+            )}
+          </main>
+
+          {/* Floating Shortcut Button that Redirects to YouTube */}
+          <YouTubeLinkButton />
+
+          {/* Fullscreen Lightbox Modal */}
+          <LightboxModal
+            item={selectedLightboxItem}
+            items={memories}
             isOwner={isOwner}
-            onOpenAddModal={() => setIsAddModalOpen(true)}
-            onSelectMemory={(item) => setSelectedLightboxItem(item)}
-            onNavigateToLetter={() => handleSelectTab('letter')}
-            onNavigateToSong={() => handleSelectTab('song')}
+            onClose={() => setSelectedLightboxItem(null)}
+            onSelect={(item) => setSelectedLightboxItem(item)}
+            onDelete={handleDeleteMemory}
+            onResolveMedia={handleResolveMedia}
           />
-        )}
 
-        {activeTab === 'letter' && (
-          <LoveLetterPage
-            letterData={letterData}
+          {/* Add Photo or Video Modal */}
+          <AddMediaModal
+            isOpen={isAddModalOpen}
+            onClose={() => setIsAddModalOpen(false)}
+            onAdd={handleAddMemory}
+            onAddMultiple={handleAddMultipleMemories}
+            user={user}
             isOwner={isOwner}
             onSignInOwner={handleSignInOwner}
-            onUpdateLetter={handleUpdateLetter}
-            onHeartTap={triggerHeartBurst}
-            tapCount={tapCount}
-            onNavigateToMemories={() => handleSelectTab('memories')}
-            onNavigateToSong={() => handleSelectTab('song')}
+            onSignOutOwner={handleSignOutOwner}
           />
-        )}
 
-        {activeTab === 'song' && (
-          <SongPage
-            onNavigateToMemories={() => handleSelectTab('memories')}
-            onNavigateToLetter={() => handleSelectTab('letter')}
-          />
-        )}
-      </main>
-
-      {/* Floating Shortcut Button that Redirects to YouTube */}
-      <YouTubeLinkButton />
-
-      {/* Fullscreen Lightbox Modal */}
-      <LightboxModal
-        item={selectedLightboxItem}
-        items={memories}
-        isOwner={isOwner}
-        onClose={() => setSelectedLightboxItem(null)}
-        onSelect={(item) => setSelectedLightboxItem(item)}
-        onDelete={handleDeleteMemory}
-        onResolveMedia={handleResolveMedia}
-      />
-
-      {/* Add Photo or Video Modal */}
-      <AddMediaModal
-        isOpen={isAddModalOpen}
-        onClose={() => setIsAddModalOpen(false)}
-        onAdd={handleAddMemory}
-        onAddMultiple={handleAddMultipleMemories}
-        user={user}
-        isOwner={isOwner}
-        onSignInOwner={handleSignInOwner}
-        onSignOutOwner={handleSignOutOwner}
-      />
-
-      {/* Footer */}
-      <footer className="relative z-10 border-t border-rose-500/15 py-8 text-center text-xs text-rose-300/60 pb-24 md:pb-8">
-        <div className="inline-flex items-center justify-center gap-2">
-          <p>Made with all my love for Tsi ❤️ Happy Birthday</p>
-          <button
-            type="button"
-            onClick={() => setIsAddModalOpen(true)}
-            title="Creator Access"
-            aria-label="Creator Access"
-            className="text-rose-300/25 hover:text-rose-300/80 transition-colors p-1 cursor-pointer"
-          >
-            <Lock className="w-3 h-3" />
-          </button>
-        </div>
-      </footer>
+          {/* Footer */}
+          <footer className="relative z-10 border-t border-rose-500/15 py-8 text-center text-xs text-rose-300/60 pb-24 md:pb-8">
+            <div className="inline-flex items-center justify-center gap-2">
+              <p>Made with all my love for Tsi ❤️ Happy Birthday</p>
+              <button
+                type="button"
+                onClick={handleLockFrontPage}
+                title="Lock & View Front Password Page"
+                aria-label="Lock & View Front Password Page"
+                className="text-rose-300/30 hover:text-rose-300/80 transition-colors p-1 cursor-pointer"
+              >
+                <KeyRound className="w-3 h-3" />
+              </button>
+              <button
+                type="button"
+                onClick={() => setIsAddModalOpen(true)}
+                title="Creator Access"
+                aria-label="Creator Access"
+                className="text-rose-300/25 hover:text-rose-300/80 transition-colors p-1 cursor-pointer"
+              >
+                <Lock className="w-3 h-3" />
+              </button>
+            </div>
+          </footer>
+        </>
+      )}
     </div>
   );
 }
