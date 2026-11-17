@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { motion, AnimatePresence } from 'motion/react';
+import { motion, useMotionValue, animate } from 'motion/react';
 import {
   Play,
   Pause,
@@ -8,7 +8,6 @@ import {
   Heart,
   Camera,
   ChevronLeft,
-  ChevronRight,
   Maximize2,
   Loader2,
   Film,
@@ -39,55 +38,19 @@ interface MemoriesPageProps {
 
 type AlbumViewState = 'frontCover' | 'pages' | 'endCover';
 
+interface FlipSheetState {
+  id: number;
+  direction: 1 | -1; // 1 = lifts & flips open to the left (0 -> -168deg), -1 = swings shut onto the stack (-168deg -> 0)
+  kind: 'frontCover' | 'page' | 'endCover';
+  item: MemoryItem | null;
+  pageIndex: number;
+  commitState: AlbumViewState;
+  commitIndex: number;
+}
+
 const SLIDE_DURATION_MS = 5000;
-
-/**
- * Physical 3D album page & front-cover flip variants (hinged on the left spine):
- * - direction >= 0 (Open Cover / Next Photo — triggered when she swipes RIGHT or clicks Next):
- *   The top cover/page lifts on top (zIndex 35) and flips open in 3D around its left spine
- *   (rotateY: 0 -> -112deg), revealing the next photo page waiting underneath.
- * - direction < 0 (Previous Photo / Return to Cover — triggered when she swipes LEFT or clicks Previous):
- *   The previous page/cover swings back over the stack from the left (rotateY: -112deg -> 0deg).
- */
-const albumFlipVariants = {
-  enter: (direction: number) => ({
-    rotateY: direction >= 0 ? 0 : -112,
-    scale: direction >= 0 ? 0.985 : 1,
-    opacity: direction >= 0 ? 0.92 : 0,
-  }),
-  center: {
-    rotateY: 0,
-    scale: 1,
-    opacity: 1,
-  },
-  exit: (direction: number) => ({
-    rotateY: direction >= 0 ? -112 : 0,
-    scale: direction >= 0 ? 0.95 : 0.985,
-    opacity: 0,
-  }),
-};
-
-/**
- * Dedicated Album Closing animation when finishing the end slide:
- * Swings the heavy hardcover shut from the left spine (-132deg -> 0deg) right over the final page.
- */
-const albumEndCloseVariants = {
-  enter: {
-    rotateY: -132,
-    scale: 1.03,
-    opacity: 0.4,
-  },
-  center: {
-    rotateY: 0,
-    scale: 1,
-    opacity: 1,
-  },
-  exit: {
-    rotateY: -120,
-    scale: 1.01,
-    opacity: 0,
-  },
-};
+const PAGE_FLIP_DURATION = 0.72;
+const PAGE_FLIP_EASE: [number, number, number, number] = [0.24, 0.9, 0.32, 1];
 
 export const MemoriesPage: React.FC<MemoriesPageProps> = ({
   memories,
@@ -102,7 +65,7 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
   const [filter, setFilter] = useState<'all' | 'photo' | 'video' | 'birthday'>('all');
   const [albumState, setAlbumState] = useState<AlbumViewState>('frontCover');
   const [currentIndex, setCurrentIndex] = useState<number>(0);
-  const [slideDirection, setSlideDirection] = useState<number>(1);
+  const [flipSheet, setFlipSheet] = useState<FlipSheetState | null>(null);
   const [isAutoPlaying, setIsAutoPlaying] = useState<boolean>(false);
   const [loadingVideoId, setLoadingVideoId] = useState<string | null>(null);
   const [videoError, setVideoError] = useState<string | null>(null);
@@ -119,6 +82,8 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
   const filmstripRef = useRef<HTMLDivElement | null>(null);
   const thumbRefs = useRef<(HTMLButtonElement | null)[]>([]);
   const isDraggingRef = useRef<boolean>(false);
+  const flipCounterRef = useRef<number>(0);
+  const dragTilt = useMotionValue(0);
   const showAddButton = isOwner || (!isLoading && memories.length === 0);
 
   const filteredMemories = memories.filter((item) => {
@@ -130,12 +95,14 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
 
   // Reset or clamp slide index when filter or list changes
   useEffect(() => {
+    setFlipSheet(null);
+    dragTilt.set(0);
     setCurrentIndex((prev) => {
       if (filteredMemories.length === 0) return 0;
       return prev >= filteredMemories.length ? 0 : prev;
     });
     setVideoError(null);
-  }, [filter, filteredMemories.length]);
+  }, [filter, filteredMemories.length, dragTilt]);
 
   const activeItem = filteredMemories[currentIndex] ?? null;
   const isFirstSlide = currentIndex === 0;
@@ -148,36 +115,121 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
     setCaptionSaveError(null);
   }, [activeItem?.id, albumState]);
 
+  /**
+   * Commit any in-progress page flip immediately if a new flip is triggered rapidly,
+   * returning the logical view state and index we are flipping from.
+   */
+  const resolveBaseBeforeNewFlip = useCallback(() => {
+    dragTilt.set(0);
+    if (flipSheet) {
+      return {
+        state: flipSheet.commitState,
+        index: flipSheet.commitIndex,
+      };
+    }
+    return {
+      state: albumState,
+      index: currentIndex,
+    };
+  }, [albumState, currentIndex, flipSheet, dragTilt]);
+
   const handleOpenAlbum = useCallback(() => {
     if (filteredMemories.length === 0) return;
+    const base = resolveBaseBeforeNewFlip();
+    if (base.state === 'pages' && base.index === 0) {
+      setFlipSheet(null);
+      return;
+    }
+
     setVideoError(null);
-    setSlideDirection(1);
-    setCurrentIndex(0);
+    const id = ++flipCounterRef.current;
+
+    // Immediately reveal Page 1 underneath while the Front (or End) Cover flips open to the left
     setAlbumState('pages');
-  }, [filteredMemories.length]);
+    setCurrentIndex(0);
+    setFlipSheet({
+      id,
+      direction: 1,
+      kind: base.state === 'endCover' ? 'endCover' : 'frontCover',
+      item: filteredMemories[0] ?? null,
+      pageIndex: 0,
+      commitState: 'pages',
+      commitIndex: 0,
+    });
+  }, [filteredMemories, resolveBaseBeforeNewFlip]);
 
   const handleCloseToFrontCover = useCallback(() => {
+    const base = resolveBaseBeforeNewFlip();
     setIsAutoPlaying(false);
     setVideoError(null);
-    setSlideDirection(-1);
-    setAlbumState('frontCover');
-  }, []);
+    if (base.state === 'frontCover') {
+      setFlipSheet(null);
+      return;
+    }
+
+    const id = ++flipCounterRef.current;
+    // Keep the current page visible underneath while the Front Cover swings shut from the left
+    setAlbumState('pages');
+    setCurrentIndex(base.index);
+    setFlipSheet({
+      id,
+      direction: -1,
+      kind: 'frontCover',
+      item: filteredMemories[0] ?? null,
+      pageIndex: 0,
+      commitState: 'frontCover',
+      commitIndex: 0,
+    });
+  }, [filteredMemories, resolveBaseBeforeNewFlip]);
 
   const handleCloseAlbumAtEnd = useCallback(() => {
+    const base = resolveBaseBeforeNewFlip();
     setIsAutoPlaying(false);
     setVideoError(null);
-    setSlideDirection(-1);
-    setAlbumState('endCover');
-  }, []);
+    if (base.state === 'endCover') {
+      setFlipSheet(null);
+      return;
+    }
+
+    const lastIdx = Math.max(0, filteredMemories.length - 1);
+    const id = ++flipCounterRef.current;
+
+    // Keep the last page visible underneath while the heavy leather closing cover swings shut from the left
+    setAlbumState('pages');
+    setCurrentIndex(lastIdx);
+    setFlipSheet({
+      id,
+      direction: -1,
+      kind: 'endCover',
+      item: filteredMemories[lastIdx] ?? null,
+      pageIndex: lastIdx,
+      commitState: 'endCover',
+      commitIndex: lastIdx,
+    });
+  }, [filteredMemories, resolveBaseBeforeNewFlip]);
 
   const handleReopenLastPageFromEnd = useCallback(() => {
     if (filteredMemories.length === 0) return;
+    resolveBaseBeforeNewFlip();
     setIsAutoPlaying(false);
     setVideoError(null);
-    setSlideDirection(1);
-    setCurrentIndex(filteredMemories.length - 1);
+
+    const lastIdx = filteredMemories.length - 1;
+    const id = ++flipCounterRef.current;
+
+    // Reveal the last page underneath while the closing cover lifts open to the left
     setAlbumState('pages');
-  }, [filteredMemories.length]);
+    setCurrentIndex(lastIdx);
+    setFlipSheet({
+      id,
+      direction: 1,
+      kind: 'endCover',
+      item: filteredMemories[lastIdx] ?? null,
+      pageIndex: lastIdx,
+      commitState: 'pages',
+      commitIndex: lastIdx,
+    });
+  }, [filteredMemories, resolveBaseBeforeNewFlip]);
 
   const handleStartEditCaption = () => {
     if (!activeItem) return;
@@ -214,24 +266,26 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
   };
 
   /**
-   * Non-wrapping album navigation:
-   * - Front Cover: forward -> Page 1; backward -> stays on Front Cover (never wraps to last slide).
-   * - Page 1: backward -> Front Cover (never wraps to last slide).
-   * - Last Slide: forward -> Closing Album animation (endCover) (never wraps to first slide).
-   * - End Cover: backward -> Last Slide; forward -> stays closed.
+   * Non-wrapping physical album page turn:
+   * - Front Cover: swipe right -> lifts cover open to Page 1; swipe left -> stays closed (never wraps).
+   * - Page 1: swipe left -> swings Front Cover shut (never wraps to last slide).
+   * - Last Slide: swipe right -> plays closing photo album animation (endCover) (never wraps to Page 1).
+   * - End Cover: swipe left -> lifts cover open back to Last Slide; swipe right -> stays closed.
    */
   const paginate = useCallback(
     (delta: number) => {
       if (filteredMemories.length === 0) return;
 
-      if (albumState === 'frontCover') {
+      const base = resolveBaseBeforeNewFlip();
+
+      if (base.state === 'frontCover') {
         if (delta > 0) {
           handleOpenAlbum();
         }
         return;
       }
 
-      if (albumState === 'endCover') {
+      if (base.state === 'endCover') {
         if (delta < 0) {
           handleReopenLastPageFromEnd();
         }
@@ -240,29 +294,56 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
 
       // Currently viewing inside 'pages'
       if (delta > 0) {
-        if (currentIndex >= filteredMemories.length - 1) {
+        if (base.index >= filteredMemories.length - 1) {
           // Reached the end slide -> play the closing photo album animation!
           handleCloseAlbumAtEnd();
           return;
         }
+        const nextIdx = Math.min(filteredMemories.length - 1, base.index + 1);
+        const leavingItem = filteredMemories[base.index] ?? null;
+        const id = ++flipCounterRef.current;
+
         setVideoError(null);
-        setSlideDirection(1);
-        setCurrentIndex((prev) => Math.min(filteredMemories.length - 1, prev + 1));
+        // Reveal next page underneath while the current page flips open to the left
+        setAlbumState('pages');
+        setCurrentIndex(nextIdx);
+        setFlipSheet({
+          id,
+          direction: 1,
+          kind: 'page',
+          item: leavingItem,
+          pageIndex: base.index,
+          commitState: 'pages',
+          commitIndex: nextIdx,
+        });
       } else if (delta < 0) {
-        if (currentIndex <= 0) {
-          // On the first slide -> return to Front Cover instead of wrapping to the last slide
+        if (base.index <= 0) {
+          // On the first slide -> swing Front Cover shut instead of wrapping to the last slide
           handleCloseToFrontCover();
           return;
         }
+        const prevIdx = Math.max(0, base.index - 1);
+        const returningItem = filteredMemories[prevIdx] ?? null;
+        const id = ++flipCounterRef.current;
+
         setVideoError(null);
-        setSlideDirection(-1);
-        setCurrentIndex((prev) => Math.max(0, prev - 1));
+        // Keep current page underneath while previous page swings back down from the left
+        setAlbumState('pages');
+        setCurrentIndex(base.index);
+        setFlipSheet({
+          id,
+          direction: -1,
+          kind: 'page',
+          item: returningItem,
+          pageIndex: prevIdx,
+          commitState: 'pages',
+          commitIndex: prevIdx,
+        });
       }
     },
     [
-      albumState,
-      currentIndex,
-      filteredMemories.length,
+      filteredMemories,
+      resolveBaseBeforeNewFlip,
       handleOpenAlbum,
       handleReopenLastPageFromEnd,
       handleCloseAlbumAtEnd,
@@ -274,19 +355,59 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
     (targetIdx: number) => {
       if (filteredMemories.length === 0) return;
       const clampedIdx = Math.max(0, Math.min(filteredMemories.length - 1, targetIdx));
-      if (albumState !== 'pages') {
+      const base = resolveBaseBeforeNewFlip();
+
+      if (base.state !== 'pages') {
+        const id = ++flipCounterRef.current;
         setVideoError(null);
-        setSlideDirection(1);
-        setCurrentIndex(clampedIdx);
         setAlbumState('pages');
+        setCurrentIndex(clampedIdx);
+        setFlipSheet({
+          id,
+          direction: 1,
+          kind: base.state,
+          item: filteredMemories[clampedIdx] ?? null,
+          pageIndex: clampedIdx,
+          commitState: 'pages',
+          commitIndex: clampedIdx,
+        });
         return;
       }
-      if (clampedIdx === currentIndex) return;
+
+      if (clampedIdx === base.index) {
+        setFlipSheet(null);
+        return;
+      }
+
       setVideoError(null);
-      setSlideDirection(clampedIdx > currentIndex ? 1 : -1);
-      setCurrentIndex(clampedIdx);
+      const id = ++flipCounterRef.current;
+      if (clampedIdx > base.index) {
+        setAlbumState('pages');
+        setCurrentIndex(clampedIdx);
+        setFlipSheet({
+          id,
+          direction: 1,
+          kind: 'page',
+          item: filteredMemories[base.index] ?? null,
+          pageIndex: base.index,
+          commitState: 'pages',
+          commitIndex: clampedIdx,
+        });
+      } else {
+        setAlbumState('pages');
+        setCurrentIndex(base.index);
+        setFlipSheet({
+          id,
+          direction: -1,
+          kind: 'page',
+          item: filteredMemories[clampedIdx] ?? null,
+          pageIndex: clampedIdx,
+          commitState: 'pages',
+          commitIndex: clampedIdx,
+        });
+      }
     },
-    [filteredMemories.length, currentIndex, albumState]
+    [filteredMemories, resolveBaseBeforeNewFlip]
   );
 
   // Auto-advance album pages when open and Auto-Turn is active; closes album at the end slide
@@ -297,24 +418,11 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
     if (activeItem.type === 'video') return;
 
     const timer = window.setTimeout(() => {
-      if (currentIndex >= filteredMemories.length - 1) {
-        handleCloseAlbumAtEnd();
-      } else {
-        setVideoError(null);
-        setSlideDirection(1);
-        setCurrentIndex((prev) => Math.min(filteredMemories.length - 1, prev + 1));
-      }
+      paginate(1);
     }, SLIDE_DURATION_MS);
 
     return () => window.clearTimeout(timer);
-  }, [
-    albumState,
-    isAutoPlaying,
-    filteredMemories.length,
-    activeItem,
-    currentIndex,
-    handleCloseAlbumAtEnd,
-  ]);
+  }, [albumState, isAutoPlaying, filteredMemories.length, activeItem, paginate]);
 
   // Keyboard arrow navigation
   useEffect(() => {
@@ -409,10 +517,11 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
           <button
             type="button"
             onClick={() => {
+              setFlipSheet(null);
+              dragTilt.set(0);
               setFilter('all');
               setCurrentIndex(0);
               setAlbumState('pages');
-              setSlideDirection(1);
             }}
             className={`flex-1 sm:flex-none px-4 py-1.5 text-xs font-medium rounded-lg transition-all whitespace-nowrap cursor-pointer ${
               filter === 'all'
@@ -425,10 +534,11 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
           <button
             type="button"
             onClick={() => {
+              setFlipSheet(null);
+              dragTilt.set(0);
               setFilter('photo');
               setCurrentIndex(0);
               setAlbumState('pages');
-              setSlideDirection(1);
             }}
             className={`flex-1 sm:flex-none px-4 py-1.5 text-xs font-medium rounded-lg transition-all whitespace-nowrap cursor-pointer ${
               filter === 'photo'
@@ -441,10 +551,11 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
           <button
             type="button"
             onClick={() => {
+              setFlipSheet(null);
+              dragTilt.set(0);
               setFilter('video');
               setCurrentIndex(0);
               setAlbumState('pages');
-              setSlideDirection(1);
             }}
             className={`flex-1 sm:flex-none px-4 py-1.5 text-xs font-medium rounded-lg transition-all whitespace-nowrap cursor-pointer ${
               filter === 'video'
@@ -457,10 +568,11 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
           <button
             type="button"
             onClick={() => {
+              setFlipSheet(null);
+              dragTilt.set(0);
               setFilter('birthday');
               setCurrentIndex(0);
               setAlbumState('pages');
-              setSlideDirection(1);
             }}
             className={`flex-1 sm:flex-none px-4 py-1.5 text-xs font-medium rounded-lg transition-all whitespace-nowrap cursor-pointer ${
               filter === 'birthday'
@@ -635,445 +747,330 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
               {/* 3D Spine-Hinged Page Flipping Viewport */}
               <div
                 className="relative h-[420px] sm:h-[515px] md:h-[565px] rounded-xl overflow-hidden bg-[#2b030c]"
-                style={{ perspective: '1800px' }}
+                style={{ perspective: '2000px' }}
               >
-                <AnimatePresence initial={false} custom={slideDirection}>
-                  {albumState === 'frontCover' ? (
-                    /* ================= FRONT COVER PAGE ================= */
-                    <motion.div
-                      key="album-front-cover"
-                      custom={slideDirection}
-                      variants={albumFlipVariants}
-                      initial="enter"
-                      animate="center"
-                      exit="exit"
-                      transition={{
-                        duration: 0.68,
-                        ease: [0.22, 1, 0.36, 1],
-                      }}
-                      onPanStart={() => {
-                        isDraggingRef.current = true;
-                      }}
-                      onPanEnd={(_, info) => {
-                        setTimeout(() => {
-                          isDraggingRef.current = false;
-                        }, 80);
+                {/* ================= BASE LAYER (ALWAYS FLAT UNDERNEATH) ================= */}
+                {albumState === 'frontCover' ? (
+                  <motion.div
+                    style={{
+                      transformOrigin: '0% 50%',
+                      rotateY: dragTilt,
+                      backgroundImage:
+                        'radial-gradient(circle at 65% 28%, rgba(180, 40, 72, 0.28), transparent 58%), linear-gradient(135deg, #5d0a1e 0%, #3a0411 52%, #24020a 100%)',
+                    }}
+                    onPanStart={() => {
+                      isDraggingRef.current = true;
+                    }}
+                    onPan={(_, info) => {
+                      if (info.offset.x > 0) {
+                        dragTilt.set(-Math.min(18, info.offset.x * 0.14));
+                      }
+                    }}
+                    onPanEnd={(_, info) => {
+                      animate(dragTilt, 0, { duration: 0.25 });
+                      setTimeout(() => {
+                        isDraggingRef.current = false;
+                      }, 80);
 
-                        // Swiping right opens the cover onto Page 1; swiping left is blocked on Front Cover
-                        if (info.offset.x > 35 || info.velocity.x > 200) {
-                          handleOpenAlbum();
-                        }
-                      }}
-                      onClick={() => {
-                        if (isDraggingRef.current) return;
+                      // Swiping right flips the cover open onto Page 1; swiping left is blocked on Front Cover
+                      if (info.offset.x > 35 || info.velocity.x > 180) {
                         handleOpenAlbum();
-                      }}
-                      style={{
-                        transformOrigin: '0% 50%',
-                        transformStyle: 'preserve-3d',
-                        backfaceVisibility: 'hidden',
-                        backgroundImage:
-                          'radial-gradient(circle at 65% 28%, rgba(180, 40, 72, 0.28), transparent 58%), linear-gradient(135deg, #5d0a1e 0%, #3a0411 52%, #24020a 100%)',
-                      }}
-                      className="absolute inset-0 z-30 rounded-xl shadow-[0_20px_50px_rgba(0,0,0,0.75)] flex flex-col justify-between p-6 sm:p-10 pl-10 sm:pl-14 cursor-pointer select-none touch-pan-y border border-amber-200/30"
+                      }
+                    }}
+                    onClick={() => {
+                      if (isDraggingRef.current) return;
+                      handleOpenAlbum();
+                    }}
+                    className="absolute inset-0 z-10 rounded-xl shadow-[0_20px_50px_rgba(0,0,0,0.75)] flex flex-col justify-between p-4 sm:p-10 pl-9 sm:pl-14 cursor-pointer select-none touch-pan-y border border-amber-200/30"
+                  >
+                    {/* Ribbed Leather Spine Hinge on Left */}
+                    <div
+                      aria-hidden="true"
+                      className="pointer-events-none absolute inset-y-0 left-0 w-7 sm:w-10 bg-gradient-to-r from-[#1a0106] via-[#2c030c] to-transparent border-r border-amber-200/20 flex flex-col justify-evenly py-8 px-1.5"
                     >
-                      {/* Ribbed Leather Spine Hinge on Left */}
-                      <div
-                        aria-hidden="true"
-                        className="pointer-events-none absolute inset-y-0 left-0 w-7 sm:w-10 bg-gradient-to-r from-[#1a0106] via-[#2c030c] to-transparent border-r border-amber-200/20 flex flex-col justify-evenly py-8 px-1.5"
-                      >
-                        <span className="h-2 rounded-sm bg-gradient-to-r from-amber-300/35 to-amber-100/10" />
-                        <span className="h-2 rounded-sm bg-gradient-to-r from-amber-300/35 to-amber-100/10" />
-                        <span className="h-2 rounded-sm bg-gradient-to-r from-amber-300/35 to-amber-100/10" />
-                        <span className="h-2 rounded-sm bg-gradient-to-r from-amber-300/35 to-amber-100/10" />
-                      </div>
+                      <span className="h-2 rounded-sm bg-gradient-to-r from-amber-300/35 to-amber-100/10" />
+                      <span className="h-2 rounded-sm bg-gradient-to-r from-amber-300/35 to-amber-100/10" />
+                      <span className="h-2 rounded-sm bg-gradient-to-r from-amber-300/35 to-amber-100/10" />
+                      <span className="h-2 rounded-sm bg-gradient-to-r from-amber-300/35 to-amber-100/10" />
+                    </div>
 
-                      {/* Gold Foil Embossed Inner Frame */}
-                      <div
-                        aria-hidden="true"
-                        className="pointer-events-none absolute inset-3.5 sm:inset-5 left-9 sm:left-12 rounded-lg border border-amber-200/35"
-                      />
-                      <div
-                        aria-hidden="true"
-                        className="pointer-events-none absolute inset-5 sm:inset-7 left-10.5 sm:left-14 rounded-md border border-dashed border-amber-200/20"
-                      />
+                    {/* Gold Foil Embossed Inner Frame */}
+                    <div
+                      aria-hidden="true"
+                      className="pointer-events-none absolute inset-3 sm:inset-5 left-8.5 sm:left-12 rounded-lg border border-amber-200/35"
+                    />
+                    <div
+                      aria-hidden="true"
+                      className="pointer-events-none absolute inset-4.5 sm:inset-7 left-10 sm:left-14 rounded-md border border-dashed border-amber-200/20"
+                    />
 
-                      {/* Brass Corner Protectors on Right Corners */}
-                      <span
-                        aria-hidden="true"
-                        className="pointer-events-none absolute top-0 right-0 w-7 h-7 border-t-[4px] border-r-[4px] border-amber-300/55 rounded-tr-xl"
-                      />
-                      <span
-                        aria-hidden="true"
-                        className="pointer-events-none absolute bottom-0 right-0 w-7 h-7 border-b-[4px] border-r-[4px] border-amber-300/55 rounded-br-xl"
-                      />
+                    {/* Brass Corner Protectors on Right Corners */}
+                    <span
+                      aria-hidden="true"
+                      className="pointer-events-none absolute top-0 right-0 w-7 h-7 border-t-[4px] border-r-[4px] border-amber-300/55 rounded-tr-xl"
+                    />
+                    <span
+                      aria-hidden="true"
+                      className="pointer-events-none absolute bottom-0 right-0 w-7 h-7 border-b-[4px] border-r-[4px] border-amber-300/55 rounded-br-xl"
+                    />
 
-                      {/* Cover Top Dedication */}
-                      <div className="relative z-10 text-center pt-2">
-                        <p className="text-[11px] sm:text-xs uppercase tracking-[0.28em] text-amber-200/80 font-medium">
-                          Birthday Keepsake Edition
-                        </p>
-                      </div>
+                    {/* Cover Top Dedication */}
+                    <div className="relative z-10 text-center pt-1 sm:pt-2">
+                      <p className="text-[10px] sm:text-xs uppercase tracking-[0.26em] text-amber-200/80 font-medium">
+                        Birthday Keepsake Edition
+                      </p>
+                    </div>
 
-                      {/* Cover Center Cameo Portrait Window & Gold Foil Title */}
-                      <div className="relative z-10 flex flex-col items-center text-center my-auto px-2">
-                        {filteredMemories[0]?.type === 'photo' && filteredMemories[0]?.url ? (
-                          <div className="mb-4 sm:mb-5 p-1.5 rounded-xl bg-[#faf3e7] border-2 border-amber-300/60 shadow-2xl -rotate-1">
-                            <img
-                              src={filteredMemories[0].url}
-                              alt={filteredMemories[0].title}
-                              referrerPolicy="no-referrer"
-                              draggable={false}
-                              className="w-24 h-24 sm:w-32 sm:h-32 object-cover rounded-lg"
-                            />
-                          </div>
-                        ) : (
-                          <div className="mb-4 w-16 h-16 rounded-full border border-amber-200/45 bg-rose-950/60 flex items-center justify-center text-amber-200 shadow-lg">
-                            <Heart className="w-7 h-7 fill-current text-rose-400" />
-                          </div>
-                        )}
-
-                        <h2 className="font-serif-cormorant text-3xl sm:text-5xl font-bold tracking-wide text-transparent bg-clip-text bg-gradient-to-b from-amber-100 via-amber-200 to-amber-400 drop-shadow">
-                          Moments With Tsi
-                        </h2>
-
-                        <div className="flex items-center justify-center gap-3 my-3 w-44">
-                          <span className="h-px flex-1 bg-amber-200/35" />
-                          <Heart className="w-3.5 h-3.5 text-rose-300 fill-current shrink-0" />
-                          <span className="h-px flex-1 bg-amber-200/35" />
-                        </div>
-
-                        <p className="text-xs sm:text-sm text-rose-100/80 max-w-sm font-light leading-relaxed">
-                          Every photograph here holds a smile, a memory, and a piece of my heart for you.
-                        </p>
-
-                        <button
-                          type="button"
-                          onPointerDown={(e) => e.stopPropagation()}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleOpenAlbum();
-                          }}
-                          className="mt-5 sm:mt-6 inline-flex items-center gap-2.5 px-6 py-3 min-h-[44px] rounded-xl bg-gradient-to-r from-amber-300 via-amber-200 to-amber-300 hover:from-amber-200 hover:to-amber-100 text-[#330610] text-xs sm:text-sm font-bold tracking-wide shadow-xl shadow-black/50 active:scale-95 transition-all cursor-pointer"
-                        >
-                          <BookOpen className="w-4 h-4" />
-                          <span>Open Photo Album</span>
-                          <ArrowRight className="w-4 h-4" />
-                        </button>
-                      </div>
-
-                      {/* Cover Bottom Gold Stamp */}
-                      <div className="relative z-10 flex items-center justify-between text-[11px] text-amber-200/70 pb-1">
-                        <span>Volume I · For Tsi</span>
-                        <span className="tabular-nums">
-                          {filteredMemories.length}{' '}
-                          {filteredMemories.length === 1 ? 'Memory' : 'Memories'}
-                        </span>
-                      </div>
-                    </motion.div>
-                  ) : albumState === 'endCover' ? (
-                    /* ================= CLOSING PHOTO ALBUM ANIMATION & BACK COVER ================= */
-                    <motion.div
-                      key="album-end-cover"
-                      variants={albumEndCloseVariants}
-                      initial="enter"
-                      animate="center"
-                      exit="exit"
-                      transition={{
-                        duration: 0.78,
-                        ease: [0.16, 1, 0.3, 1],
-                      }}
-                      onPanStart={() => {
-                        isDraggingRef.current = true;
-                      }}
-                      onPanEnd={(_, info) => {
-                        setTimeout(() => {
-                          isDraggingRef.current = false;
-                        }, 80);
-
-                        // Swiping left on the closed End Cover reopens the final photo page
-                        if (info.offset.x < -35 || info.velocity.x < -200) {
-                          handleReopenLastPageFromEnd();
-                        }
-                      }}
-                      style={{
-                        transformOrigin: '0% 50%',
-                        transformStyle: 'preserve-3d',
-                        backfaceVisibility: 'hidden',
-                        backgroundImage:
-                          'radial-gradient(circle at 35% 35%, rgba(168, 32, 64, 0.25), transparent 62%), linear-gradient(145deg, #4b0717 0%, #2d030d 55%, #1c0107 100%)',
-                      }}
-                      className="absolute inset-0 z-40 rounded-xl shadow-[0_24px_55px_rgba(0,0,0,0.85)] flex flex-col justify-between p-6 sm:p-10 pl-10 sm:pl-14 select-none touch-pan-y border border-amber-200/30"
-                    >
-                      {/* Ribbed Leather Spine Hinge on Left */}
-                      <div
-                        aria-hidden="true"
-                        className="pointer-events-none absolute inset-y-0 left-0 w-7 sm:w-10 bg-gradient-to-r from-[#140105] via-[#27030b] to-transparent border-r border-amber-200/20 flex flex-col justify-evenly py-8 px-1.5"
-                      >
-                        <span className="h-2 rounded-sm bg-gradient-to-r from-amber-300/35 to-amber-100/10" />
-                        <span className="h-2 rounded-sm bg-gradient-to-r from-amber-300/35 to-amber-100/10" />
-                        <span className="h-2 rounded-sm bg-gradient-to-r from-amber-300/35 to-amber-100/10" />
-                        <span className="h-2 rounded-sm bg-gradient-to-r from-amber-300/35 to-amber-100/10" />
-                      </div>
-
-                      {/* Gold Foil Double Inner Frame */}
-                      <div
-                        aria-hidden="true"
-                        className="pointer-events-none absolute inset-3.5 sm:inset-5 left-9 sm:left-12 rounded-lg border border-amber-200/35"
-                      />
-                      <div
-                        aria-hidden="true"
-                        className="pointer-events-none absolute inset-5 sm:inset-7 left-10.5 sm:left-14 rounded-md border border-dashed border-amber-200/20"
-                      />
-
-                      {/* Closing Ribbon / Clasp Accent that settles into place once shut */}
-                      <motion.div
-                        aria-hidden="true"
-                        initial={{ scaleX: 0, opacity: 0 }}
-                        animate={{ scaleX: 1, opacity: 1 }}
-                        transition={{ delay: 0.42, duration: 0.35, ease: [0.16, 1, 0.3, 1] }}
-                        style={{ originX: 1 }}
-                        className="pointer-events-none absolute right-0 top-1/2 -translate-y-1/2 w-8 sm:w-12 h-11 rounded-l-lg bg-gradient-to-l from-amber-300/90 via-amber-200/80 to-amber-400/70 border-y border-l border-amber-100/60 shadow-lg flex items-center justify-start pl-2.5"
-                      >
-                        <Heart className="w-3.5 h-3.5 text-[#3a0411] fill-current" />
-                      </motion.div>
-
-                      <div className="relative z-10 text-center pt-2">
-                        <p className="text-[11px] sm:text-xs uppercase tracking-[0.28em] text-amber-200/80 font-medium">
-                          End of Volume I
-                        </p>
-                      </div>
-
-                      <div className="relative z-10 flex flex-col items-center text-center my-auto px-2">
-                        <motion.div
-                          initial={{ scale: 0.75, opacity: 0 }}
-                          animate={{ scale: 1, opacity: 1 }}
-                          transition={{ delay: 0.32, duration: 0.4, ease: [0.16, 1, 0.3, 1] }}
-                          className="mb-4 w-16 h-16 rounded-full border border-amber-200/50 bg-rose-950/75 flex items-center justify-center text-rose-300 shadow-2xl"
-                        >
-                          <Heart className="w-7 h-7 fill-current text-rose-400" />
-                        </motion.div>
-
-                        <h2 className="font-serif-cormorant text-3xl sm:text-4xl font-bold tracking-wide text-transparent bg-clip-text bg-gradient-to-b from-amber-100 via-amber-200 to-amber-400 drop-shadow">
-                          Forever With You, Tsi
-                        </h2>
-
-                        <div className="flex items-center justify-center gap-3 my-3 w-40">
-                          <span className="h-px flex-1 bg-amber-200/35" />
-                          <span className="text-[10px] uppercase tracking-[0.2em] text-amber-200/75">
-                            Sealed
-                          </span>
-                          <span className="h-px flex-1 bg-amber-200/35" />
-                        </div>
-
-                        <p className="text-xs sm:text-sm text-rose-100/80 max-w-sm font-light leading-relaxed">
-                          All {filteredMemories.length} favorite moments tucked safely inside. Ready for the next part of your birthday surprise?
-                        </p>
-
-                        <div className="mt-6 flex flex-col sm:flex-row items-center justify-center gap-3 w-full max-w-sm">
-                          <button
-                            type="button"
-                            onPointerDown={(e) => e.stopPropagation()}
-                            onClick={handleOpenAlbum}
-                            className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-5 py-2.5 min-h-[44px] rounded-xl bg-rose-950/80 hover:bg-rose-900 border border-amber-200/35 text-amber-100 text-xs font-semibold transition-all cursor-pointer whitespace-nowrap"
-                          >
-                            <RotateCcw className="w-3.5 h-3.5" />
-                            <span>Reopen Album</span>
-                          </button>
-
-                          <button
-                            type="button"
-                            onPointerDown={(e) => e.stopPropagation()}
-                            onClick={onNavigateToLetter}
-                            className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-5 py-2.5 min-h-[44px] rounded-xl bg-gradient-to-r from-amber-300 via-amber-200 to-amber-300 hover:from-amber-200 hover:to-amber-100 text-[#330610] text-xs font-bold shadow-xl shadow-black/50 active:scale-95 transition-all cursor-pointer whitespace-nowrap"
-                          >
-                            <span>Open Love Letter</span>
-                            <ArrowRight className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
-                      </div>
-
-                      <div className="relative z-10 flex items-center justify-between text-[11px] text-amber-200/70 pb-1">
-                        <button
-                          type="button"
-                          onPointerDown={(e) => e.stopPropagation()}
-                          onClick={handleReopenLastPageFromEnd}
-                          className="inline-flex items-center gap-1 hover:text-amber-100 transition-colors cursor-pointer"
-                        >
-                          <ChevronLeft className="w-3.5 h-3.5" />
-                          <span>Back to Last Photo</span>
-                        </button>
-                        <span>Happy Birthday, Tsi ❤️</span>
-                      </div>
-                    </motion.div>
-                  ) : (
-                    /* ================= FLIPPING ALBUM PHOTO PAGE ================= */
-                    <motion.div
-                      key={activeItem.id}
-                      custom={slideDirection}
-                      variants={albumFlipVariants}
-                      initial="enter"
-                      animate="center"
-                      exit="exit"
-                      transition={{
-                        duration: 0.62,
-                        ease: [0.22, 1, 0.36, 1],
-                      }}
-                      onPanStart={() => {
-                        if (activeItem.type !== 'video') {
-                          isDraggingRef.current = true;
-                        }
-                      }}
-                      onPanEnd={(_, info) => {
-                        if (activeItem.type === 'video') return;
-                        setTimeout(() => {
-                          isDraggingRef.current = false;
-                        }, 80);
-
-                        // Swiping RIGHT -> Next pic (or Close Album on the end slide)
-                        // Swiping LEFT -> Previous pic (or Front Cover on the first slide; never wraps to last slide)
-                        if (info.offset.x > 40 || info.velocity.x > 220) {
-                          setIsAutoPlaying(false);
-                          paginate(1);
-                        } else if (info.offset.x < -40 || info.velocity.x < -220) {
-                          setIsAutoPlaying(false);
-                          paginate(-1);
-                        }
-                      }}
-                      onClick={() => {
-                        if (isDraggingRef.current) return;
-                        if (activeItem.type === 'photo') {
-                          setIsAutoPlaying(false);
-                          onSelectMemory(activeItem);
-                        }
-                      }}
-                      style={{
-                        transformOrigin: '0% 50%',
-                        transformStyle: 'preserve-3d',
-                        backfaceVisibility: 'hidden',
-                        backgroundImage:
-                          'radial-gradient(circle at 25% 20%, rgba(255,255,255,0.7), transparent 65%), linear-gradient(90deg, rgba(105,62,48,0.18) 0%, rgba(105,62,48,0.04) 5%, rgba(255,255,255,0) 14%, rgba(255,255,255,0) 94%, rgba(105,62,48,0.09) 100%)',
-                      }}
-                      className="absolute inset-0 z-20 flex flex-col bg-[#faf4e8] rounded-xl shadow-[0_18px_40px_-10px_rgba(24,4,8,0.55)] touch-pan-y select-none cursor-grab active:cursor-grabbing"
-                    >
-                      {/* Active Auto-Turn Progress Bar along top edge of album page */}
-                      {isAutoPlaying && activeItem.type === 'photo' && (
-                        <div className="absolute top-0 left-0 right-0 h-1 bg-rose-900/15 z-30">
-                          <motion.div
-                            key={`album-progress-${activeItem.id}-${currentIndex}`}
-                            initial={{ scaleX: 0 }}
-                            animate={{ scaleX: 1 }}
-                            transition={{ duration: SLIDE_DURATION_MS / 1000, ease: 'linear' }}
-                            style={{ originX: 0 }}
-                            className="h-full w-full bg-gradient-to-r from-rose-600 via-rose-400 to-amber-400"
+                    {/* Cover Center Cameo Portrait Window & Gold Foil Title */}
+                    <div className="relative z-10 flex flex-col items-center text-center my-auto px-2">
+                      {filteredMemories[0]?.type === 'photo' && filteredMemories[0]?.url ? (
+                        <div className="mb-3 sm:mb-5 p-1.5 rounded-xl bg-[#faf3e7] border-2 border-amber-300/60 shadow-2xl -rotate-1">
+                          <img
+                            src={filteredMemories[0].url}
+                            alt={filteredMemories[0].title}
+                            referrerPolicy="no-referrer"
+                            draggable={false}
+                            className="w-20 h-20 sm:w-32 sm:h-32 object-cover rounded-lg"
                           />
+                        </div>
+                      ) : (
+                        <div className="mb-3 sm:mb-4 w-12 h-12 sm:w-16 sm:h-16 rounded-full border border-amber-200/45 bg-rose-950/60 flex items-center justify-center text-amber-200 shadow-lg">
+                          <Heart className="w-6 h-6 sm:w-7 sm:h-7 fill-current text-rose-400" />
                         </div>
                       )}
 
-                      {/* Left Album Spine Crease & Binding Stitch Rings */}
-                      <div
-                        aria-hidden="true"
-                        className="pointer-events-none absolute inset-y-0 left-0 w-7 sm:w-9 bg-gradient-to-r from-[#7c4d3e]/22 via-[#7c4d3e]/6 to-transparent z-10 flex flex-col justify-evenly py-7 pl-1.5"
+                      <h2 className="font-serif-cormorant text-2xl sm:text-5xl font-bold tracking-wide text-transparent bg-clip-text bg-gradient-to-b from-amber-100 via-amber-200 to-amber-400 drop-shadow">
+                        Moments With Tsi
+                      </h2>
+
+                      <div className="flex items-center justify-center gap-3 my-2 sm:my-3 w-36 sm:w-44">
+                        <span className="h-px flex-1 bg-amber-200/35" />
+                        <Heart className="w-3.5 h-3.5 text-rose-300 fill-current shrink-0" />
+                        <span className="h-px flex-1 bg-amber-200/35" />
+                      </div>
+
+                      <p className="text-[11px] sm:text-sm text-rose-100/80 max-w-xs sm:max-w-sm font-light leading-snug sm:leading-relaxed">
+                        Every photograph here holds a smile, a memory, and a piece of my heart for you.
+                      </p>
+
+                      <button
+                        type="button"
+                        onPointerDown={(e) => e.stopPropagation()}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleOpenAlbum();
+                        }}
+                        className="mt-4 sm:mt-6 inline-flex items-center gap-2.5 px-5 sm:px-6 py-2.5 sm:py-3 min-h-[44px] rounded-xl bg-gradient-to-r from-amber-300 via-amber-200 to-amber-300 hover:from-amber-200 hover:to-amber-100 text-[#330610] text-xs sm:text-sm font-bold tracking-wide shadow-xl shadow-black/50 active:scale-95 transition-all cursor-pointer"
                       >
-                        <span className="w-3 h-1 rounded-full bg-[#6d3f32]/40" />
-                        <span className="w-3 h-1 rounded-full bg-[#6d3f32]/40" />
-                        <span className="w-3 h-1 rounded-full bg-[#6d3f32]/40" />
-                        <span className="w-3 h-1 rounded-full bg-[#6d3f32]/40" />
-                      </div>
+                        <BookOpen className="w-4 h-4" />
+                        <span>Open Photo Album</span>
+                        <ArrowRight className="w-4 h-4" />
+                      </button>
+                    </div>
 
-                      {/* Mounted Photo Print Area inside the Album Page */}
-                      <div className="relative flex-1 min-h-0 flex items-center justify-center p-4 sm:p-7 pl-8 sm:pl-11">
-                        <div className="relative w-full h-full flex items-center justify-center rounded-lg bg-white p-2 sm:p-3 shadow-[0_10px_28px_-8px_rgba(38,14,18,0.28)] border border-[#e3d4be]">
-                          {/* Classic Photo Album Corner Mounts */}
-                          <span
-                            aria-hidden="true"
-                            className="pointer-events-none absolute -top-1 -left-1 w-4 h-4 border-t-[3px] border-l-[3px] border-amber-700/55 rounded-tl-sm z-20"
-                          />
-                          <span
-                            aria-hidden="true"
-                            className="pointer-events-none absolute -top-1 -right-1 w-4 h-4 border-t-[3px] border-r-[3px] border-amber-700/55 rounded-tr-sm z-20"
-                          />
-                          <span
-                            aria-hidden="true"
-                            className="pointer-events-none absolute -bottom-1 -left-1 w-4 h-4 border-b-[3px] border-l-[3px] border-amber-700/55 rounded-bl-sm z-20"
-                          />
-                          <span
-                            aria-hidden="true"
-                            className="pointer-events-none absolute -bottom-1 -right-1 w-4 h-4 border-b-[3px] border-r-[3px] border-amber-700/55 rounded-br-sm z-20"
-                          />
+                    {/* Cover Bottom Gold Stamp */}
+                    <div className="relative z-10 flex items-center justify-between text-[10px] sm:text-[11px] text-amber-200/70 pb-0.5 sm:pb-1">
+                      <span>Volume I · For Tsi</span>
+                      <span className="tabular-nums">
+                        {filteredMemories.length}{' '}
+                        {filteredMemories.length === 1 ? 'Memory' : 'Memories'}
+                      </span>
+                    </div>
+                  </motion.div>
+                ) : albumState === 'endCover' ? (
+                  <motion.div
+                    style={{
+                      transformOrigin: '0% 50%',
+                      rotateY: dragTilt,
+                      backgroundImage:
+                        'radial-gradient(circle at 35% 35%, rgba(168, 32, 64, 0.25), transparent 62%), linear-gradient(145deg, #4b0717 0%, #2d030d 55%, #1c0107 100%)',
+                    }}
+                    onPanStart={() => {
+                      isDraggingRef.current = true;
+                    }}
+                    onPan={(_, info) => {
+                      if (info.offset.x < 0) {
+                        dragTilt.set(-Math.min(14, Math.abs(info.offset.x) * 0.12));
+                      }
+                    }}
+                    onPanEnd={(_, info) => {
+                      animate(dragTilt, 0, { duration: 0.25 });
+                      setTimeout(() => {
+                        isDraggingRef.current = false;
+                      }, 80);
 
-                          {activeItem.type === 'photo' ? (
-                            activeItem.url ? (
-                              <img
-                                src={activeItem.url}
-                                alt={activeItem.title}
-                                referrerPolicy="no-referrer"
-                                draggable={false}
-                                className="max-h-full max-w-full w-auto h-auto object-contain rounded-sm select-none"
-                              />
-                            ) : (
-                              <div className="flex flex-col items-center justify-center text-rose-900/60">
-                                <Camera className="w-10 h-10 mb-2" />
-                                <span className="text-xs">Photo preview unavailable</span>
-                              </div>
-                            )
-                          ) : activeItem.url ? (
-                            <video
-                              src={activeItem.url}
-                              controls
-                              playsInline
-                              onPointerDown={(e) => e.stopPropagation()}
-                              onPlay={() => setIsAutoPlaying(false)}
-                              className="max-h-full max-w-full w-full h-full object-contain rounded-sm bg-black"
-                            />
-                          ) : (
-                            <div className="w-full h-full rounded-sm bg-[#1b0409] flex flex-col items-center justify-center p-6 text-center space-y-3">
-                              {loadingVideoId === activeItem.id ? (
-                                <>
-                                  <Loader2 className="w-9 h-9 animate-spin text-rose-400" />
-                                  <p className="text-xs text-rose-200/80">Loading video memory...</p>
-                                </>
-                              ) : (
-                                <>
-                                  <button
-                                    type="button"
-                                    onPointerDown={(e) => e.stopPropagation()}
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      handleLoadInlineVideo(activeItem);
-                                    }}
-                                    className="w-16 h-16 rounded-full bg-rose-600/90 hover:bg-rose-500 text-white flex items-center justify-center shadow-xl transition-transform hover:scale-105 cursor-pointer"
-                                    aria-label="Play Video"
-                                  >
-                                    <Play className="w-7 h-7 fill-current ml-0.5" />
-                                  </button>
-                                  <p className="text-xs text-rose-200/85 font-medium">
-                                    {videoError ? videoError : 'Tap to Play Video'}
-                                  </p>
-                                </>
-                              )}
-                            </div>
-                          )}
-                        </div>
-                      </div>
+                      // Swiping left on the closed End Cover lifts it back open to the final photo page
+                      if (info.offset.x < -35 || info.velocity.x < -180) {
+                        handleReopenLastPageFromEnd();
+                      }
+                    }}
+                    className="absolute inset-0 z-10 rounded-xl shadow-[0_24px_55px_rgba(0,0,0,0.85)] flex flex-col justify-between p-4 sm:p-10 pl-9 sm:pl-14 select-none touch-pan-y border border-amber-200/30"
+                  >
+                    {/* Ribbed Leather Spine Hinge on Left */}
+                    <div
+                      aria-hidden="true"
+                      className="pointer-events-none absolute inset-y-0 left-0 w-7 sm:w-10 bg-gradient-to-r from-[#140105] via-[#27030b] to-transparent border-r border-amber-200/20 flex flex-col justify-evenly py-8 px-1.5"
+                    >
+                      <span className="h-2 rounded-sm bg-gradient-to-r from-amber-300/35 to-amber-100/10" />
+                      <span className="h-2 rounded-sm bg-gradient-to-r from-amber-300/35 to-amber-100/10" />
+                      <span className="h-2 rounded-sm bg-gradient-to-r from-amber-300/35 to-amber-100/10" />
+                      <span className="h-2 rounded-sm bg-gradient-to-r from-amber-300/35 to-amber-100/10" />
+                    </div>
 
-                      {/* Subtle Archival Page Footer Margin */}
-                      <div className="shrink-0 flex items-center justify-between gap-3 px-8 sm:px-11 pb-3 pt-0.5 text-[11px] text-[#6d3b42]/80">
-                        <span className="truncate font-serif-cormorant italic text-sm text-[#4f1f27]">
-                          {activeItem.title}
-                        </span>
-                        <span className="shrink-0 tabular-nums font-medium">
-                          {String(currentIndex + 1).padStart(2, '0')} /{' '}
-                          {String(filteredMemories.length).padStart(2, '0')}
-                        </span>
-                      </div>
+                    {/* Gold Foil Double Inner Frame */}
+                    <div
+                      aria-hidden="true"
+                      className="pointer-events-none absolute inset-3 sm:inset-5 left-8.5 sm:left-12 rounded-lg border border-amber-200/35"
+                    />
+                    <div
+                      aria-hidden="true"
+                      className="pointer-events-none absolute inset-4.5 sm:inset-7 left-10 sm:left-14 rounded-md border border-dashed border-amber-200/20"
+                    />
+
+                    {/* Gold Clasp Settled Into Place */}
+                    <motion.div
+                      aria-hidden="true"
+                      initial={{ scaleX: 0, opacity: 0 }}
+                      animate={{ scaleX: 1, opacity: 1 }}
+                      transition={{ duration: 0.35, ease: [0.16, 1, 0.3, 1] }}
+                      style={{ originX: 1 }}
+                      className="pointer-events-none absolute right-0 top-1/2 -translate-y-1/2 w-7 sm:w-12 h-10 sm:h-11 rounded-l-lg bg-gradient-to-l from-amber-300/90 via-amber-200/80 to-amber-400/70 border-y border-l border-amber-100/60 shadow-lg flex items-center justify-start pl-2 sm:pl-2.5"
+                    >
+                      <Heart className="w-3.5 h-3.5 text-[#3a0411] fill-current" />
                     </motion.div>
-                  )}
-                </AnimatePresence>
 
-                {/* Left / Right Album Page Flip Buttons (when viewing pages) */}
-                {albumState === 'pages' && (
-                  <>
+                    <div className="relative z-10 text-center pt-1 sm:pt-2">
+                      <p className="text-[10px] sm:text-xs uppercase tracking-[0.26em] text-amber-200/80 font-medium">
+                        End of Volume I
+                      </p>
+                    </div>
+
+                    <div className="relative z-10 flex flex-col items-center text-center my-auto px-2">
+                      <motion.div
+                        initial={{ scale: 0.8, opacity: 0 }}
+                        animate={{ scale: 1, opacity: 1 }}
+                        transition={{ duration: 0.35, ease: [0.16, 1, 0.3, 1] }}
+                        className="mb-2.5 sm:mb-4 w-11 h-11 sm:w-16 sm:h-16 rounded-full border border-amber-200/50 bg-rose-950/75 flex items-center justify-center text-rose-300 shadow-2xl"
+                      >
+                        <Heart className="w-5 h-5 sm:w-7 sm:h-7 fill-current text-rose-400" />
+                      </motion.div>
+
+                      <h2 className="font-serif-cormorant text-2xl sm:text-4xl font-bold tracking-wide text-transparent bg-clip-text bg-gradient-to-b from-amber-100 via-amber-200 to-amber-400 drop-shadow">
+                        Forever With You, Tsi
+                      </h2>
+
+                      <div className="flex items-center justify-center gap-3 my-2 sm:my-3 w-36 sm:w-40">
+                        <span className="h-px flex-1 bg-amber-200/35" />
+                        <span className="text-[10px] uppercase tracking-[0.2em] text-amber-200/75">
+                          Sealed
+                        </span>
+                        <span className="h-px flex-1 bg-amber-200/35" />
+                      </div>
+
+                      <p className="text-[11px] sm:text-sm text-rose-100/80 max-w-xs sm:max-w-sm font-light leading-snug sm:leading-relaxed">
+                        All {filteredMemories.length} favorite moments tucked safely inside. Ready for the next part of your birthday surprise?
+                      </p>
+
+                      <div className="mt-4 sm:mt-6 flex flex-wrap items-center justify-center gap-2 sm:gap-3 w-full max-w-sm">
+                        <button
+                          type="button"
+                          onPointerDown={(e) => e.stopPropagation()}
+                          onClick={onNavigateToLetter}
+                          className="inline-flex items-center justify-center gap-1.5 sm:gap-2 px-3.5 sm:px-5 py-2.5 min-h-[44px] rounded-xl bg-gradient-to-r from-amber-300 via-amber-200 to-amber-300 hover:from-amber-200 hover:to-amber-100 text-[#330610] text-[11px] sm:text-xs font-bold shadow-xl shadow-black/50 active:scale-95 transition-all cursor-pointer whitespace-nowrap"
+                        >
+                          <span>Open Love Letter</span>
+                          <ArrowRight className="w-3.5 h-3.5" />
+                        </button>
+
+                        <button
+                          type="button"
+                          onPointerDown={(e) => e.stopPropagation()}
+                          onClick={handleOpenAlbum}
+                          className="inline-flex items-center justify-center gap-1.5 sm:gap-2 px-3.5 sm:px-5 py-2.5 min-h-[44px] rounded-xl bg-rose-950/80 hover:bg-rose-900 border border-amber-200/35 text-amber-100 text-[11px] sm:text-xs font-semibold transition-all cursor-pointer whitespace-nowrap"
+                        >
+                          <RotateCcw className="w-3.5 h-3.5" />
+                          <span>Reopen Album</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="relative z-10 flex items-center justify-between text-[10px] sm:text-[11px] text-amber-200/70 pt-2 pb-0.5 sm:pb-1">
+                      <button
+                        type="button"
+                        onPointerDown={(e) => e.stopPropagation()}
+                        onClick={handleReopenLastPageFromEnd}
+                        className="inline-flex items-center gap-1 hover:text-amber-100 transition-colors cursor-pointer"
+                      >
+                        <ChevronLeft className="w-3.5 h-3.5" />
+                        <span>Back to Last Photo</span>
+                      </button>
+                      <span>Happy Birthday, Tsi ❤️</span>
+                    </div>
+                  </motion.div>
+                ) : (
+                  /* ================= ACTIVE ARCHIVAL PHOTO ALBUM PAGE (NO NEXT BUTTON) ================= */
+                  <motion.div
+                    key={activeItem.id}
+                    style={{
+                      transformOrigin: '0% 50%',
+                      rotateY: dragTilt,
+                      backgroundImage:
+                        'radial-gradient(circle at 25% 20%, rgba(255,255,255,0.72), transparent 65%), linear-gradient(90deg, rgba(105,62,48,0.2) 0%, rgba(105,62,48,0.05) 5%, rgba(255,255,255,0) 14%, rgba(255,255,255,0) 94%, rgba(105,62,48,0.09) 100%)',
+                    }}
+                    onPanStart={() => {
+                      if (activeItem.type !== 'video') {
+                        isDraggingRef.current = true;
+                      }
+                    }}
+                    onPan={(_, info) => {
+                      if (activeItem.type === 'video') return;
+                      if (info.offset.x > 0) {
+                        dragTilt.set(-Math.min(18, info.offset.x * 0.14));
+                      } else if (info.offset.x < 0) {
+                        dragTilt.set(Math.min(6, Math.abs(info.offset.x) * 0.05));
+                      }
+                    }}
+                    onPanEnd={(_, info) => {
+                      animate(dragTilt, 0, { duration: 0.22 });
+                      if (activeItem.type === 'video') return;
+                      setTimeout(() => {
+                        isDraggingRef.current = false;
+                      }, 80);
+
+                      // Swiping RIGHT -> Next pic (or Close Album on the end slide)
+                      // Swiping LEFT -> Previous pic (or Front Cover on the first slide; never wraps to last slide)
+                      if (info.offset.x > 35 || info.velocity.x > 180) {
+                        setIsAutoPlaying(false);
+                        paginate(1);
+                      } else if (info.offset.x < -35 || info.velocity.x < -180) {
+                        setIsAutoPlaying(false);
+                        paginate(-1);
+                      }
+                    }}
+                    onClick={() => {
+                      if (isDraggingRef.current) return;
+                      if (activeItem.type === 'photo') {
+                        setIsAutoPlaying(false);
+                        onSelectMemory(activeItem);
+                      }
+                    }}
+                    className="group/page absolute inset-0 z-10 flex flex-col bg-[#faf4e8] rounded-xl shadow-[0_18px_40px_-10px_rgba(24,4,8,0.55)] touch-pan-y select-none cursor-grab active:cursor-grabbing"
+                  >
+                    {/* Active Auto-Turn Progress Bar along top edge of album page */}
+                    {isAutoPlaying && activeItem.type === 'photo' && (
+                      <div className="absolute top-0 left-0 right-0 h-1 bg-rose-900/15 z-30">
+                        <motion.div
+                          key={`album-progress-${activeItem.id}-${currentIndex}`}
+                          initial={{ scaleX: 0 }}
+                          animate={{ scaleX: 1 }}
+                          transition={{ duration: SLIDE_DURATION_MS / 1000, ease: 'linear' }}
+                          style={{ originX: 0 }}
+                          className="h-full w-full bg-gradient-to-r from-rose-600 via-rose-400 to-amber-400"
+                        />
+                      </div>
+                    )}
+
+                    {/* Left Album Spine Crease & Binding Stitch Rings (Tap left spine edge to turn back a page) */}
                     <button
                       type="button"
                       onPointerDown={(e) => e.stopPropagation()}
@@ -1082,13 +1079,104 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
                         setIsAutoPlaying(false);
                         paginate(-1);
                       }}
-                      aria-label={isFirstSlide ? 'Close to front cover' : 'Previous photo'}
-                      title={isFirstSlide ? 'Back to front cover' : 'Previous photo'}
-                      className="absolute left-2 sm:left-3 top-1/2 -translate-y-1/2 z-40 min-w-[44px] min-h-[44px] rounded-full bg-[#240309]/80 hover:bg-rose-700 text-white border border-amber-200/30 flex items-center justify-center transition-colors shadow-xl cursor-pointer"
+                      aria-label={isFirstSlide ? 'Flip back to front cover' : 'Flip back to previous page'}
+                      title={isFirstSlide ? 'Flip back to cover' : 'Flip back one page'}
+                      className="absolute inset-y-0 left-0 w-8 sm:w-10 bg-gradient-to-r from-[#7c4d3e]/24 via-[#7c4d3e]/8 to-transparent z-20 flex flex-col justify-evenly py-7 pl-1.5 cursor-pointer hover:from-[#7c4d3e]/34 transition-colors"
                     >
-                      <ChevronLeft className="w-6 h-6" />
+                      <span className="w-3 h-1 rounded-full bg-[#6d3f32]/45" />
+                      <span className="w-3 h-1 rounded-full bg-[#6d3f32]/45" />
+                      <span className="w-3 h-1 rounded-full bg-[#6d3f32]/45" />
+                      <span className="w-3 h-1 rounded-full bg-[#6d3f32]/45" />
                     </button>
 
+                    {/* Mounted Photo Print Area inside the Album Page */}
+                    <div className="relative flex-1 min-h-0 flex items-center justify-center p-4 sm:p-7 pl-9 sm:pl-12">
+                      <div className="relative w-full h-full flex items-center justify-center rounded-lg bg-white p-2 sm:p-3 shadow-[0_10px_28px_-8px_rgba(38,14,18,0.28)] border border-[#e3d4be]">
+                        {/* Classic Photo Album Corner Mounts */}
+                        <span
+                          aria-hidden="true"
+                          className="pointer-events-none absolute -top-1 -left-1 w-4 h-4 border-t-[3px] border-l-[3px] border-amber-700/55 rounded-tl-sm z-20"
+                        />
+                        <span
+                          aria-hidden="true"
+                          className="pointer-events-none absolute -top-1 -right-1 w-4 h-4 border-t-[3px] border-r-[3px] border-amber-700/55 rounded-tr-sm z-20"
+                        />
+                        <span
+                          aria-hidden="true"
+                          className="pointer-events-none absolute -bottom-1 -left-1 w-4 h-4 border-b-[3px] border-l-[3px] border-amber-700/55 rounded-bl-sm z-20"
+                        />
+                        <span
+                          aria-hidden="true"
+                          className="pointer-events-none absolute -bottom-1 -right-1 w-4 h-4 border-b-[3px] border-r-[3px] border-amber-700/55 rounded-br-sm z-20"
+                        />
+
+                        {activeItem.type === 'photo' ? (
+                          activeItem.url ? (
+                            <img
+                              src={activeItem.url}
+                              alt={activeItem.title}
+                              referrerPolicy="no-referrer"
+                              draggable={false}
+                              className="max-h-full max-w-full w-auto h-auto object-contain rounded-sm select-none"
+                            />
+                          ) : (
+                            <div className="flex flex-col items-center justify-center text-rose-900/60">
+                              <Camera className="w-10 h-10 mb-2" />
+                              <span className="text-xs">Photo preview unavailable</span>
+                            </div>
+                          )
+                        ) : activeItem.url ? (
+                          <video
+                            src={activeItem.url}
+                            controls
+                            playsInline
+                            onPointerDown={(e) => e.stopPropagation()}
+                            onPlay={() => setIsAutoPlaying(false)}
+                            className="max-h-full max-w-full w-full h-full object-contain rounded-sm bg-black"
+                          />
+                        ) : (
+                          <div className="w-full h-full rounded-sm bg-[#1b0409] flex flex-col items-center justify-center p-6 text-center space-y-3">
+                            {loadingVideoId === activeItem.id ? (
+                              <>
+                                <Loader2 className="w-9 h-9 animate-spin text-rose-400" />
+                                <p className="text-xs text-rose-200/80">Loading video memory...</p>
+                              </>
+                            ) : (
+                              <>
+                                <button
+                                  type="button"
+                                  onPointerDown={(e) => e.stopPropagation()}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleLoadInlineVideo(activeItem);
+                                  }}
+                                  className="w-16 h-16 rounded-full bg-rose-600/90 hover:bg-rose-500 text-white flex items-center justify-center shadow-xl transition-transform hover:scale-105 cursor-pointer"
+                                  aria-label="Play Video"
+                                >
+                                  <Play className="w-7 h-7 fill-current ml-0.5" />
+                                </button>
+                                <p className="text-xs text-rose-200/85 font-medium">
+                                  {videoError ? videoError : 'Tap to Play Video'}
+                                </p>
+                              </>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Subtle Archival Page Footer Margin */}
+                    <div className="shrink-0 flex items-center justify-between gap-3 px-9 sm:px-14 pb-3 pt-0.5 text-[11px] text-[#6d3b42]/80">
+                      <span className="truncate font-serif-cormorant italic text-sm text-[#4f1f27]">
+                        {activeItem.title}
+                      </span>
+                      <span className="shrink-0 tabular-nums font-medium pr-8 sm:pr-10">
+                        {String(currentIndex + 1).padStart(2, '0')} /{' '}
+                        {String(filteredMemories.length).padStart(2, '0')}
+                      </span>
+                    </div>
+
+                    {/* Realistic Curled Paper Page Corner (Bottom-Right) — Tap or swipe right to flip the page */}
                     <button
                       type="button"
                       onPointerDown={(e) => e.stopPropagation()}
@@ -1097,12 +1185,263 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
                         setIsAutoPlaying(false);
                         paginate(1);
                       }}
-                      aria-label={isLastSlide ? 'Close photo album' : 'Next photo'}
-                      title={isLastSlide ? 'Close photo album' : 'Next photo'}
-                      className="absolute right-2 sm:right-3 top-1/2 -translate-y-1/2 z-40 min-w-[44px] min-h-[44px] rounded-full bg-[#240309]/80 hover:bg-rose-700 text-white border border-amber-200/30 flex items-center justify-center transition-colors shadow-xl cursor-pointer"
+                      aria-label={isLastSlide ? 'Flip to close album' : 'Flip page forward'}
+                      title={isLastSlide ? 'Tap corner to close album' : 'Tap corner to flip page'}
+                      className="absolute bottom-0 right-0 z-20 w-12 h-12 sm:w-14 sm:h-14 cursor-pointer focus:outline-none group/corner"
                     >
-                      <ChevronRight className="w-6 h-6" />
+                      {/* Shadow underneath curled triangle */}
+                      <span
+                        aria-hidden="true"
+                        className="pointer-events-none absolute bottom-0 right-0 w-10 h-10 sm:w-12 sm:h-12 transition-transform duration-300 group-hover/page:scale-110 group-hover/corner:scale-125 origin-bottom-right"
+                        style={{
+                          background:
+                            'linear-gradient(135deg, transparent 48%, rgba(62,24,28,0.22) 50%, rgba(28,8,12,0.5) 100%)',
+                        }}
+                      />
+                      {/* Curled cream paper fold */}
+                      <span
+                        aria-hidden="true"
+                        className="pointer-events-none absolute bottom-0 right-0 w-10 h-10 sm:w-12 sm:h-12 transition-transform duration-300 group-hover/page:scale-110 group-hover/corner:scale-125 origin-bottom-right rounded-tl-md"
+                        style={{
+                          background:
+                            'linear-gradient(135deg, #f3e6d0 0%, #e5d2b5 47%, rgba(168,138,104,0.35) 50%, transparent 51%)',
+                          boxShadow: '-3px -3px 8px rgba(45,14,18,0.18)',
+                        }}
+                      />
                     </button>
+                  </motion.div>
+                )}
+
+                {/* ================= REAL TWO-SIDED 3D FLIPPING PAGE SHEET LAYER ================= */}
+                {flipSheet && (
+                  <>
+                    {/* Dynamic shadow cast across the underlying page during the turn */}
+                    <motion.div
+                      key={`flip-shadow-${flipSheet.id}`}
+                      initial={{ opacity: flipSheet.direction === 1 ? 0.45 : 0 }}
+                      animate={{ opacity: flipSheet.direction === 1 ? 0 : 0.48 }}
+                      transition={{ duration: PAGE_FLIP_DURATION, ease: 'easeInOut' }}
+                      aria-hidden="true"
+                      className="pointer-events-none absolute inset-0 z-20 bg-gradient-to-r from-black/75 via-black/35 to-transparent"
+                    />
+
+                    {/* Rotating 3D Double-Sided Book Leaf */}
+                    <motion.div
+                      key={`flip-leaf-${flipSheet.id}`}
+                      initial={{
+                        rotateY: flipSheet.direction === 1 ? 0 : -168,
+                      }}
+                      animate={{
+                        rotateY: flipSheet.direction === 1 ? -168 : 0,
+                      }}
+                      transition={{
+                        duration: PAGE_FLIP_DURATION,
+                        ease: PAGE_FLIP_EASE,
+                      }}
+                      onAnimationComplete={() => {
+                        setFlipSheet((current) => {
+                          if (!current || current.id !== flipSheet.id) return current;
+                          setAlbumState(current.commitState);
+                          setCurrentIndex(current.commitIndex);
+                          return null;
+                        });
+                      }}
+                      style={{
+                        transformOrigin: '0% 50%',
+                        transformStyle: 'preserve-3d',
+                      }}
+                      className="pointer-events-none absolute inset-0 z-30"
+                    >
+                      {/* FRONT FACE OF THE FLIPPING SHEET */}
+                      <div
+                        style={{ backfaceVisibility: 'hidden' }}
+                        className="absolute inset-0 rounded-xl overflow-hidden shadow-[0_20px_50px_rgba(0,0,0,0.65)]"
+                      >
+                        {flipSheet.kind === 'frontCover' ? (
+                          <div
+                            style={{
+                              backgroundImage:
+                                'radial-gradient(circle at 65% 28%, rgba(180, 40, 72, 0.28), transparent 58%), linear-gradient(135deg, #5d0a1e 0%, #3a0411 52%, #24020a 100%)',
+                            }}
+                            className="w-full h-full flex flex-col justify-between p-6 sm:p-10 pl-10 sm:pl-14 border border-amber-200/30"
+                          >
+                            <div
+                              aria-hidden="true"
+                              className="absolute inset-y-0 left-0 w-7 sm:w-10 bg-gradient-to-r from-[#1a0106] via-[#2c030c] to-transparent border-r border-amber-200/20 flex flex-col justify-evenly py-8 px-1.5"
+                            >
+                              <span className="h-2 rounded-sm bg-gradient-to-r from-amber-300/35 to-amber-100/10" />
+                              <span className="h-2 rounded-sm bg-gradient-to-r from-amber-300/35 to-amber-100/10" />
+                              <span className="h-2 rounded-sm bg-gradient-to-r from-amber-300/35 to-amber-100/10" />
+                              <span className="h-2 rounded-sm bg-gradient-to-r from-amber-300/35 to-amber-100/10" />
+                            </div>
+                            <div
+                              aria-hidden="true"
+                              className="absolute inset-3.5 sm:inset-5 left-9 sm:left-12 rounded-lg border border-amber-200/35"
+                            />
+                            <div className="relative z-10 text-center pt-2">
+                              <p className="text-[11px] sm:text-xs uppercase tracking-[0.28em] text-amber-200/80 font-medium">
+                                Birthday Keepsake Edition
+                              </p>
+                            </div>
+                            <div className="relative z-10 flex flex-col items-center text-center my-auto px-2">
+                              {filteredMemories[0]?.type === 'photo' && filteredMemories[0]?.url ? (
+                                <div className="mb-4 sm:mb-5 p-1.5 rounded-xl bg-[#faf3e7] border-2 border-amber-300/60 shadow-2xl -rotate-1">
+                                  <img
+                                    src={filteredMemories[0].url}
+                                    alt={filteredMemories[0].title}
+                                    referrerPolicy="no-referrer"
+                                    className="w-24 h-24 sm:w-32 sm:h-32 object-cover rounded-lg"
+                                  />
+                                </div>
+                              ) : (
+                                <div className="mb-4 w-16 h-16 rounded-full border border-amber-200/45 bg-rose-950/60 flex items-center justify-center text-amber-200 shadow-lg">
+                                  <Heart className="w-7 h-7 fill-current text-rose-400" />
+                                </div>
+                              )}
+                              <h2 className="font-serif-cormorant text-3xl sm:text-5xl font-bold tracking-wide text-transparent bg-clip-text bg-gradient-to-b from-amber-100 via-amber-200 to-amber-400">
+                                Moments With Tsi
+                              </h2>
+                            </div>
+                            <div className="relative z-10 flex items-center justify-between text-[11px] text-amber-200/70 pb-1">
+                              <span>Volume I · For Tsi</span>
+                              <span>{filteredMemories.length} Memories</span>
+                            </div>
+                          </div>
+                        ) : flipSheet.kind === 'endCover' ? (
+                          <div
+                            style={{
+                              backgroundImage:
+                                'radial-gradient(circle at 35% 35%, rgba(168, 32, 64, 0.25), transparent 62%), linear-gradient(145deg, #4b0717 0%, #2d030d 55%, #1c0107 100%)',
+                            }}
+                            className="w-full h-full flex flex-col justify-between p-6 sm:p-10 pl-10 sm:pl-14 border border-amber-200/30"
+                          >
+                            <div
+                              aria-hidden="true"
+                              className="absolute inset-y-0 left-0 w-7 sm:w-10 bg-gradient-to-r from-[#140105] via-[#27030b] to-transparent border-r border-amber-200/20 flex flex-col justify-evenly py-8 px-1.5"
+                            >
+                              <span className="h-2 rounded-sm bg-gradient-to-r from-amber-300/35 to-amber-100/10" />
+                              <span className="h-2 rounded-sm bg-gradient-to-r from-amber-300/35 to-amber-100/10" />
+                              <span className="h-2 rounded-sm bg-gradient-to-r from-amber-300/35 to-amber-100/10" />
+                              <span className="h-2 rounded-sm bg-gradient-to-r from-amber-300/35 to-amber-100/10" />
+                            </div>
+                            <div
+                              aria-hidden="true"
+                              className="absolute inset-3.5 sm:inset-5 left-9 sm:left-12 rounded-lg border border-amber-200/35"
+                            />
+                            <div className="relative z-10 text-center pt-2">
+                              <p className="text-[11px] sm:text-xs uppercase tracking-[0.28em] text-amber-200/80 font-medium">
+                                End of Volume I
+                              </p>
+                            </div>
+                            <div className="relative z-10 flex flex-col items-center text-center my-auto px-2">
+                              <div className="mb-4 w-16 h-16 rounded-full border border-amber-200/50 bg-rose-950/75 flex items-center justify-center text-rose-300 shadow-2xl">
+                                <Heart className="w-7 h-7 fill-current text-rose-400" />
+                              </div>
+                              <h2 className="font-serif-cormorant text-3xl sm:text-4xl font-bold tracking-wide text-transparent bg-clip-text bg-gradient-to-b from-amber-100 via-amber-200 to-amber-400">
+                                Forever With You, Tsi
+                              </h2>
+                            </div>
+                            <div className="relative z-10 flex items-center justify-between text-[11px] text-amber-200/70 pb-1">
+                              <span>Sealed With Love</span>
+                              <span>Happy Birthday, Tsi ❤️</span>
+                            </div>
+                          </div>
+                        ) : (
+                          /* Cream Photo Album Paper Sheet Front Face */
+                          <div
+                            style={{
+                              backgroundImage:
+                                'radial-gradient(circle at 25% 20%, rgba(255,255,255,0.72), transparent 65%), linear-gradient(90deg, rgba(105,62,48,0.2) 0%, rgba(105,62,48,0.05) 5%, rgba(255,255,255,0) 14%, rgba(255,255,255,0) 94%, rgba(105,62,48,0.09) 100%)',
+                            }}
+                            className="w-full h-full flex flex-col bg-[#faf4e8]"
+                          >
+                            <div
+                              aria-hidden="true"
+                              className="absolute inset-y-0 left-0 w-7 sm:w-9 bg-gradient-to-r from-[#7c4d3e]/22 via-[#7c4d3e]/6 to-transparent z-10 flex flex-col justify-evenly py-7 pl-1.5"
+                            >
+                              <span className="w-3 h-1 rounded-full bg-[#6d3f32]/40" />
+                              <span className="w-3 h-1 rounded-full bg-[#6d3f32]/40" />
+                              <span className="w-3 h-1 rounded-full bg-[#6d3f32]/40" />
+                              <span className="w-3 h-1 rounded-full bg-[#6d3f32]/40" />
+                            </div>
+                            <div className="relative flex-1 min-h-0 flex items-center justify-center p-4 sm:p-7 pl-9 sm:pl-12">
+                              <div className="relative w-full h-full flex items-center justify-center rounded-lg bg-white p-2 sm:p-3 shadow-[0_10px_28px_-8px_rgba(38,14,18,0.28)] border border-[#e3d4be]">
+                                {flipSheet.item?.type === 'photo' && flipSheet.item.url ? (
+                                  <img
+                                    src={flipSheet.item.url}
+                                    alt={flipSheet.item.title}
+                                    referrerPolicy="no-referrer"
+                                    className="max-h-full max-w-full w-auto h-auto object-contain rounded-sm"
+                                  />
+                                ) : flipSheet.item?.thumbnailUrl ? (
+                                  <img
+                                    src={flipSheet.item.thumbnailUrl}
+                                    alt={flipSheet.item.title}
+                                    referrerPolicy="no-referrer"
+                                    className="max-h-full max-w-full w-auto h-auto object-contain rounded-sm"
+                                  />
+                                ) : (
+                                  <div className="flex flex-col items-center justify-center text-rose-900/60">
+                                    <Film className="w-10 h-10 mb-2" />
+                                    <span className="text-xs">{flipSheet.item?.title}</span>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                            <div className="shrink-0 flex items-center justify-between gap-3 px-9 sm:px-14 pb-3 pt-0.5 text-[11px] text-[#6d3b42]/80">
+                              <span className="truncate font-serif-cormorant italic text-sm text-[#4f1f27]">
+                                {flipSheet.item?.title}
+                              </span>
+                              <span className="shrink-0 tabular-nums font-medium">
+                                {String(flipSheet.pageIndex + 1).padStart(2, '0')} /{' '}
+                                {String(filteredMemories.length).padStart(2, '0')}
+                              </span>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* BACK FACE OF THE FLIPPING SHEET (VISIBLE PAST -90DEG AS IT TURNS!) */}
+                      <div
+                        style={{
+                          transform: 'rotateY(180deg)',
+                          backfaceVisibility: 'hidden',
+                        }}
+                        className="absolute inset-0 rounded-xl overflow-hidden border border-[#d8c3a4]"
+                      >
+                        {flipSheet.kind === 'frontCover' || flipSheet.kind === 'endCover' ? (
+                          <div
+                            style={{
+                              backgroundImage:
+                                'linear-gradient(135deg, #3f0614 0%, #2a030c 60%, #1c0107 100%)',
+                            }}
+                            className="w-full h-full flex items-center justify-center p-8"
+                          >
+                            <div className="w-full h-full rounded-lg border border-amber-200/25 flex flex-col items-center justify-center text-center">
+                              <Heart className="w-7 h-7 text-rose-400/60 fill-current mb-2" />
+                              <p className="font-serif-cormorant italic text-lg text-amber-200/70">
+                                For Tsi, With Love
+                              </p>
+                            </div>
+                          </div>
+                        ) : (
+                          <div
+                            style={{
+                              backgroundImage:
+                                'linear-gradient(270deg, rgba(105,62,48,0.16) 0%, rgba(247,238,223,1) 12%, rgba(242,230,210,1) 100%)',
+                            }}
+                            className="w-full h-full flex items-center justify-center p-8"
+                          >
+                            <div className="w-full h-full rounded-lg border border-[#d8c3a4]/70 border-dashed flex flex-col items-center justify-center text-center">
+                              <Heart className="w-6 h-6 text-rose-800/25 fill-current mb-2" />
+                              <span className="font-serif-cormorant italic text-base text-[#7c4d3e]/45">
+                                Memories With Tsi
+                              </span>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </motion.div>
                   </>
                 )}
               </div>
@@ -1125,7 +1464,7 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
             </div>
           ) : (
             <>
-              {/* Album Page Dots + Swipe Direction Hint */}
+              {/* Album Page Dots + Swipe / Page-Curl Direction Hint */}
               <div className="flex flex-col items-center gap-2 pt-0.5">
                 {filteredMemories.length > 1 && (
                   <div className="flex items-center justify-center gap-1.5" role="tablist" aria-label="Album pages">
@@ -1156,12 +1495,12 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
                 <p className="text-[11px] text-rose-300/70 flex items-center gap-1.5">
                   {isLastSlide ? (
                     <>
-                      <span>Final page · Swipe right to close the photo album</span>
+                      <span>Final page · Swipe right or tap the curled corner to close the album</span>
                       <ArrowRight className="w-3 h-3 text-amber-300" />
                     </>
                   ) : (
                     <>
-                      <span>Swipe right to flip to next photo</span>
+                      <span>Swipe right or tap the curled page corner to turn the page</span>
                       <ArrowRight className="w-3 h-3" />
                     </>
                   )}
