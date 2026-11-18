@@ -62,7 +62,6 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
   onUpdateMemory,
   onNavigateToLetter,
 }) => {
-  const [filter, setFilter] = useState<'all' | 'photo' | 'video' | 'birthday'>('all');
   const [albumState, setAlbumState] = useState<AlbumViewState>('frontCover');
   const [currentIndex, setCurrentIndex] = useState<number>(0);
   const [flipSheet, setFlipSheet] = useState<FlipSheetState | null>(null);
@@ -82,18 +81,20 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
   const filmstripRef = useRef<HTMLDivElement | null>(null);
   const thumbRefs = useRef<(HTMLButtonElement | null)[]>([]);
   const isDraggingRef = useRef<boolean>(false);
+  const swipeGestureRef = useRef<{
+    x: number;
+    y: number;
+    time: number;
+    lockedAxis: 'x' | 'y' | null;
+    moved: boolean;
+  } | null>(null);
   const flipCounterRef = useRef<number>(0);
   const dragTilt = useMotionValue(0);
   const showAddButton = isOwner || (!isLoading && memories.length === 0);
 
-  const filteredMemories = memories.filter((item) => {
-    if (filter === 'photo') return item.type === 'photo';
-    if (filter === 'video') return item.type === 'video';
-    if (filter === 'birthday') return item.tag === 'Birthday Special';
-    return true;
-  });
+  const filteredMemories = memories;
 
-  // Reset or clamp slide index when filter or list changes
+  // Reset or clamp slide index when list changes
   useEffect(() => {
     setFlipSheet(null);
     dragTilt.set(0);
@@ -102,7 +103,7 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
       return prev >= filteredMemories.length ? 0 : prev;
     });
     setVideoError(null);
-  }, [filter, filteredMemories.length, dragTilt]);
+  }, [filteredMemories.length, dragTilt]);
 
   const activeItem = filteredMemories[currentIndex] ?? null;
   const isFirstSlide = currentIndex === 0;
@@ -454,6 +455,83 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
     }
   }, [currentIndex, albumState]);
 
+  const beginSwipe = useCallback((x: number, y: number) => {
+    swipeGestureRef.current = {
+      x,
+      y,
+      time: Date.now(),
+      lockedAxis: null,
+      moved: false,
+    };
+  }, []);
+
+  const moveSwipe = useCallback(
+    (x: number, y: number, allowNextLift: boolean, allowPrevTilt: boolean) => {
+      const g = swipeGestureRef.current;
+      if (!g) return;
+      const dx = x - g.x;
+      const dy = y - g.y;
+
+      if (g.lockedAxis === null && (Math.abs(dx) > 8 || Math.abs(dy) > 8)) {
+        g.lockedAxis = Math.abs(dx) >= Math.abs(dy) ? 'x' : 'y';
+      }
+
+      if (g.lockedAxis === 'x') {
+        g.moved = true;
+        isDraggingRef.current = true;
+        if (dx < 0 && allowNextLift) {
+          // Swiping left lifts the right side of the page around the left spine
+          dragTilt.set(-Math.min(24, Math.abs(dx) * 0.22));
+        } else if (dx > 0 && allowPrevTilt) {
+          dragTilt.set(Math.min(10, dx * 0.08));
+        }
+      }
+    },
+    [dragTilt]
+  );
+
+  const endSwipe = useCallback(
+    (x: number, y: number, onSwipeNext: () => void, onSwipePrev: () => void) => {
+      animate(dragTilt, 0, { duration: 0.22 });
+      const g = swipeGestureRef.current;
+      swipeGestureRef.current = null;
+      if (!g) return;
+
+      const dx = x - g.x;
+      const dy = y - g.y;
+      const dt = Math.max(1, Date.now() - g.time);
+      const velocityX = dx / (dt / 1000);
+
+      if (g.moved || Math.abs(dx) > 10) {
+        isDraggingRef.current = true;
+        window.setTimeout(() => {
+          isDraggingRef.current = false;
+        }, 120);
+      }
+
+      const isHorizontalSwipe = g.lockedAxis !== 'y' && Math.abs(dx) > Math.abs(dy) * 0.8;
+      if (!isHorizontalSwipe) return;
+
+      // Natural phone book swipe:
+      // - Swipe LEFT (finger moves right-to-left: dx < 0) -> Next Photo / Turn Page Forward
+      // - Swipe RIGHT (finger moves left-to-right: dx > 0) -> Previous Photo / Turn Page Back
+      if (dx < -28 || (dx < -14 && velocityX < -180)) {
+        onSwipeNext();
+      } else if (dx > 28 || (dx > 14 && velocityX > 180)) {
+        onSwipePrev();
+      }
+    },
+    [dragTilt]
+  );
+
+  const cancelSwipe = useCallback(() => {
+    swipeGestureRef.current = null;
+    animate(dragTilt, 0, { duration: 0.2 });
+    window.setTimeout(() => {
+      isDraggingRef.current = false;
+    }, 80);
+  }, [dragTilt]);
+
   const handleLoadInlineVideo = async (item: MemoryItem) => {
     if (!onResolveMedia || item.url) return;
     setIsAutoPlaying(false);
@@ -501,90 +579,15 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
             {memories.length} {memories.length === 1 ? 'Memory' : 'Memories'} Saved
           </span>
           <span aria-hidden="true">·</span>
-          <span>Swipe Right for Next Pic</span>
+          <span>Swipe to Turn Pages</span>
           <span aria-hidden="true">·</span>
           <span className="text-rose-300 font-medium">Made for Tsi</span>
         </div>
       </section>
 
-      {/* Filter Tabs & Add Button Bar */}
-      <div
-        className={`flex flex-col sm:flex-row items-center gap-4 mb-6 ${
-          showAddButton ? 'justify-between' : 'justify-center'
-        }`}
-      >
-        <div className="flex items-center p-1 bg-rose-950/60 rounded-xl border border-rose-500/20 backdrop-blur-md w-full sm:w-auto overflow-x-auto">
-          <button
-            type="button"
-            onClick={() => {
-              setFlipSheet(null);
-              dragTilt.set(0);
-              setFilter('all');
-              setCurrentIndex(0);
-              setAlbumState('pages');
-            }}
-            className={`flex-1 sm:flex-none px-4 py-1.5 text-xs font-medium rounded-lg transition-all whitespace-nowrap cursor-pointer ${
-              filter === 'all'
-                ? 'bg-rose-600 text-white shadow-sm'
-                : 'text-rose-300/70 hover:text-white'
-            }`}
-          >
-            All Moments ({memories.length})
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              setFlipSheet(null);
-              dragTilt.set(0);
-              setFilter('photo');
-              setCurrentIndex(0);
-              setAlbumState('pages');
-            }}
-            className={`flex-1 sm:flex-none px-4 py-1.5 text-xs font-medium rounded-lg transition-all whitespace-nowrap cursor-pointer ${
-              filter === 'photo'
-                ? 'bg-rose-600 text-white shadow-sm'
-                : 'text-rose-300/70 hover:text-white'
-            }`}
-          >
-            Photos
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              setFlipSheet(null);
-              dragTilt.set(0);
-              setFilter('video');
-              setCurrentIndex(0);
-              setAlbumState('pages');
-            }}
-            className={`flex-1 sm:flex-none px-4 py-1.5 text-xs font-medium rounded-lg transition-all whitespace-nowrap cursor-pointer ${
-              filter === 'video'
-                ? 'bg-rose-600 text-white shadow-sm'
-                : 'text-rose-300/70 hover:text-white'
-            }`}
-          >
-            Videos
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              setFlipSheet(null);
-              dragTilt.set(0);
-              setFilter('birthday');
-              setCurrentIndex(0);
-              setAlbumState('pages');
-            }}
-            className={`flex-1 sm:flex-none px-4 py-1.5 text-xs font-medium rounded-lg transition-all whitespace-nowrap cursor-pointer ${
-              filter === 'birthday'
-                ? 'bg-rose-600 text-white shadow-sm'
-                : 'text-rose-300/70 hover:text-white'
-            }`}
-          >
-            Birthday Special
-          </button>
-        </div>
-
-        {showAddButton && (
+      {/* Owner Add Button Bar (Filter tabs removed) */}
+      {showAddButton && (
+        <div className="flex items-center justify-end mb-5 max-w-4xl mx-auto">
           <button
             type="button"
             onClick={onOpenAddModal}
@@ -593,8 +596,8 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
             <Plus className="w-4 h-4" />
             <span>Add Photos &amp; Videos</span>
           </button>
-        )}
-      </div>
+        </div>
+      )}
 
       {/* Loading Skeleton State */}
       {isLoading ? (
@@ -758,25 +761,32 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
                       backgroundImage:
                         'radial-gradient(circle at 65% 28%, rgba(180, 40, 72, 0.28), transparent 58%), linear-gradient(135deg, #5d0a1e 0%, #3a0411 52%, #24020a 100%)',
                     }}
-                    onPanStart={() => {
-                      isDraggingRef.current = true;
+                    onTouchStart={(e) => {
+                      const t = e.touches[0];
+                      if (t) beginSwipe(t.clientX, t.clientY);
                     }}
-                    onPan={(_, info) => {
-                      if (info.offset.x > 0) {
-                        dragTilt.set(-Math.min(18, info.offset.x * 0.14));
-                      }
+                    onTouchMove={(e) => {
+                      const t = e.touches[0];
+                      if (t) moveSwipe(t.clientX, t.clientY, true, false);
                     }}
-                    onPanEnd={(_, info) => {
-                      animate(dragTilt, 0, { duration: 0.25 });
-                      setTimeout(() => {
-                        isDraggingRef.current = false;
-                      }, 80);
-
-                      // Swiping right flips the cover open onto Page 1; swiping left is blocked on Front Cover
-                      if (info.offset.x > 35 || info.velocity.x > 180) {
-                        handleOpenAlbum();
-                      }
+                    onTouchEnd={(e) => {
+                      const t = e.changedTouches[0];
+                      if (t) endSwipe(t.clientX, t.clientY, handleOpenAlbum, () => {});
                     }}
+                    onTouchCancel={cancelSwipe}
+                    onPointerDown={(e) => {
+                      if (e.pointerType === 'touch') return;
+                      beginSwipe(e.clientX, e.clientY);
+                    }}
+                    onPointerMove={(e) => {
+                      if (e.pointerType === 'touch') return;
+                      moveSwipe(e.clientX, e.clientY, true, false);
+                    }}
+                    onPointerUp={(e) => {
+                      if (e.pointerType === 'touch') return;
+                      endSwipe(e.clientX, e.clientY, handleOpenAlbum, () => {});
+                    }}
+                    onPointerCancel={cancelSwipe}
                     onClick={() => {
                       if (isDraggingRef.current) return;
                       handleOpenAlbum();
@@ -855,6 +865,7 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
 
                       <button
                         type="button"
+                        onTouchStart={(e) => e.stopPropagation()}
                         onPointerDown={(e) => e.stopPropagation()}
                         onClick={(e) => {
                           e.stopPropagation();
@@ -885,25 +896,34 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
                       backgroundImage:
                         'radial-gradient(circle at 35% 35%, rgba(168, 32, 64, 0.25), transparent 62%), linear-gradient(145deg, #4b0717 0%, #2d030d 55%, #1c0107 100%)',
                     }}
-                    onPanStart={() => {
-                      isDraggingRef.current = true;
+                    onTouchStart={(e) => {
+                      const t = e.touches[0];
+                      if (t) beginSwipe(t.clientX, t.clientY);
                     }}
-                    onPan={(_, info) => {
-                      if (info.offset.x < 0) {
-                        dragTilt.set(-Math.min(14, Math.abs(info.offset.x) * 0.12));
+                    onTouchMove={(e) => {
+                      const t = e.touches[0];
+                      if (t) moveSwipe(t.clientX, t.clientY, false, true);
+                    }}
+                    onTouchEnd={(e) => {
+                      const t = e.changedTouches[0];
+                      if (t) {
+                        endSwipe(t.clientX, t.clientY, () => {}, handleReopenLastPageFromEnd);
                       }
                     }}
-                    onPanEnd={(_, info) => {
-                      animate(dragTilt, 0, { duration: 0.25 });
-                      setTimeout(() => {
-                        isDraggingRef.current = false;
-                      }, 80);
-
-                      // Swiping left on the closed End Cover lifts it back open to the final photo page
-                      if (info.offset.x < -35 || info.velocity.x < -180) {
-                        handleReopenLastPageFromEnd();
-                      }
+                    onTouchCancel={cancelSwipe}
+                    onPointerDown={(e) => {
+                      if (e.pointerType === 'touch') return;
+                      beginSwipe(e.clientX, e.clientY);
                     }}
+                    onPointerMove={(e) => {
+                      if (e.pointerType === 'touch') return;
+                      moveSwipe(e.clientX, e.clientY, false, true);
+                    }}
+                    onPointerUp={(e) => {
+                      if (e.pointerType === 'touch') return;
+                      endSwipe(e.clientX, e.clientY, () => {}, handleReopenLastPageFromEnd);
+                    }}
+                    onPointerCancel={cancelSwipe}
                     className="absolute inset-0 z-10 rounded-xl shadow-[0_24px_55px_rgba(0,0,0,0.85)] flex flex-col justify-between p-4 sm:p-10 pl-9 sm:pl-14 select-none touch-pan-y border border-amber-200/30"
                   >
                     {/* Ribbed Leather Spine Hinge on Left */}
@@ -974,6 +994,7 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
                       <div className="mt-4 sm:mt-6 flex flex-wrap items-center justify-center gap-2 sm:gap-3 w-full max-w-sm">
                         <button
                           type="button"
+                          onTouchStart={(e) => e.stopPropagation()}
                           onPointerDown={(e) => e.stopPropagation()}
                           onClick={onNavigateToLetter}
                           className="inline-flex items-center justify-center gap-1.5 sm:gap-2 px-3.5 sm:px-5 py-2.5 min-h-[44px] rounded-xl bg-gradient-to-r from-amber-300 via-amber-200 to-amber-300 hover:from-amber-200 hover:to-amber-100 text-[#330610] text-[11px] sm:text-xs font-bold shadow-xl shadow-black/50 active:scale-95 transition-all cursor-pointer whitespace-nowrap"
@@ -984,6 +1005,7 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
 
                         <button
                           type="button"
+                          onTouchStart={(e) => e.stopPropagation()}
                           onPointerDown={(e) => e.stopPropagation()}
                           onClick={handleOpenAlbum}
                           className="inline-flex items-center justify-center gap-1.5 sm:gap-2 px-3.5 sm:px-5 py-2.5 min-h-[44px] rounded-xl bg-rose-950/80 hover:bg-rose-900 border border-amber-200/35 text-amber-100 text-[11px] sm:text-xs font-semibold transition-all cursor-pointer whitespace-nowrap"
@@ -997,6 +1019,7 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
                     <div className="relative z-10 flex items-center justify-between text-[10px] sm:text-[11px] text-amber-200/70 pt-2 pb-0.5 sm:pb-1">
                       <button
                         type="button"
+                        onTouchStart={(e) => e.stopPropagation()}
                         onPointerDown={(e) => e.stopPropagation()}
                         onClick={handleReopenLastPageFromEnd}
                         className="inline-flex items-center gap-1 hover:text-amber-100 transition-colors cursor-pointer"
@@ -1017,36 +1040,56 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
                       backgroundImage:
                         'radial-gradient(circle at 25% 20%, rgba(255,255,255,0.72), transparent 65%), linear-gradient(90deg, rgba(105,62,48,0.2) 0%, rgba(105,62,48,0.05) 5%, rgba(255,255,255,0) 14%, rgba(255,255,255,0) 94%, rgba(105,62,48,0.09) 100%)',
                     }}
-                    onPanStart={() => {
-                      if (activeItem.type !== 'video') {
-                        isDraggingRef.current = true;
+                    onTouchStart={(e) => {
+                      const t = e.touches[0];
+                      if (t) beginSwipe(t.clientX, t.clientY);
+                    }}
+                    onTouchMove={(e) => {
+                      const t = e.touches[0];
+                      if (t) moveSwipe(t.clientX, t.clientY, true, true);
+                    }}
+                    onTouchEnd={(e) => {
+                      const t = e.changedTouches[0];
+                      if (t) {
+                        endSwipe(
+                          t.clientX,
+                          t.clientY,
+                          () => {
+                            setIsAutoPlaying(false);
+                            paginate(1);
+                          },
+                          () => {
+                            setIsAutoPlaying(false);
+                            paginate(-1);
+                          }
+                        );
                       }
                     }}
-                    onPan={(_, info) => {
-                      if (activeItem.type === 'video') return;
-                      if (info.offset.x > 0) {
-                        dragTilt.set(-Math.min(18, info.offset.x * 0.14));
-                      } else if (info.offset.x < 0) {
-                        dragTilt.set(Math.min(6, Math.abs(info.offset.x) * 0.05));
-                      }
+                    onTouchCancel={cancelSwipe}
+                    onPointerDown={(e) => {
+                      if (e.pointerType === 'touch') return;
+                      beginSwipe(e.clientX, e.clientY);
                     }}
-                    onPanEnd={(_, info) => {
-                      animate(dragTilt, 0, { duration: 0.22 });
-                      if (activeItem.type === 'video') return;
-                      setTimeout(() => {
-                        isDraggingRef.current = false;
-                      }, 80);
-
-                      // Swiping RIGHT -> Next pic (or Close Album on the end slide)
-                      // Swiping LEFT -> Previous pic (or Front Cover on the first slide; never wraps to last slide)
-                      if (info.offset.x > 35 || info.velocity.x > 180) {
-                        setIsAutoPlaying(false);
-                        paginate(1);
-                      } else if (info.offset.x < -35 || info.velocity.x < -180) {
-                        setIsAutoPlaying(false);
-                        paginate(-1);
-                      }
+                    onPointerMove={(e) => {
+                      if (e.pointerType === 'touch') return;
+                      moveSwipe(e.clientX, e.clientY, true, true);
                     }}
+                    onPointerUp={(e) => {
+                      if (e.pointerType === 'touch') return;
+                      endSwipe(
+                        e.clientX,
+                        e.clientY,
+                        () => {
+                          setIsAutoPlaying(false);
+                          paginate(1);
+                        },
+                        () => {
+                          setIsAutoPlaying(false);
+                          paginate(-1);
+                        }
+                      );
+                    }}
+                    onPointerCancel={cancelSwipe}
                     onClick={() => {
                       if (isDraggingRef.current) return;
                       if (activeItem.type === 'photo') {
@@ -1073,6 +1116,7 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
                     {/* Left Album Spine Crease & Binding Stitch Rings (Tap left spine edge to turn back a page) */}
                     <button
                       type="button"
+                      onTouchStart={(e) => e.stopPropagation()}
                       onPointerDown={(e) => e.stopPropagation()}
                       onClick={(e) => {
                         e.stopPropagation();
@@ -1126,14 +1170,15 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
                             </div>
                           )
                         ) : activeItem.url ? (
-                          <video
-                            src={activeItem.url}
-                            controls
-                            playsInline
-                            onPointerDown={(e) => e.stopPropagation()}
-                            onPlay={() => setIsAutoPlaying(false)}
-                            className="max-h-full max-w-full w-full h-full object-contain rounded-sm bg-black"
-                          />
+                            <video
+                              src={activeItem.url}
+                              controls
+                              playsInline
+                              onTouchStart={(e) => e.stopPropagation()}
+                              onPointerDown={(e) => e.stopPropagation()}
+                              onPlay={() => setIsAutoPlaying(false)}
+                              className="max-h-full max-w-full w-full h-full object-contain rounded-sm bg-black"
+                            />
                         ) : (
                           <div className="w-full h-full rounded-sm bg-[#1b0409] flex flex-col items-center justify-center p-6 text-center space-y-3">
                             {loadingVideoId === activeItem.id ? (
@@ -1145,6 +1190,7 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
                               <>
                                 <button
                                   type="button"
+                                  onTouchStart={(e) => e.stopPropagation()}
                                   onPointerDown={(e) => e.stopPropagation()}
                                   onClick={(e) => {
                                     e.stopPropagation();
@@ -1179,6 +1225,7 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
                     {/* Realistic Curled Paper Page Corner (Bottom-Right) — Tap or swipe right to flip the page */}
                     <button
                       type="button"
+                      onTouchStart={(e) => e.stopPropagation()}
                       onPointerDown={(e) => e.stopPropagation()}
                       onClick={(e) => {
                         e.stopPropagation();
@@ -1452,14 +1499,14 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
           {albumState === 'frontCover' ? (
             <div className="text-center pt-1">
               <p className="text-xs text-rose-200/75 inline-flex items-center gap-1.5">
-                <span>Tap &ldquo;Open Photo Album&rdquo; or swipe right on the cover to flip to Page 1</span>
+                <span>Tap &ldquo;Open Photo Album&rdquo; or swipe left on the cover to flip to Page 1</span>
                 <ArrowRight className="w-3.5 h-3.5 text-amber-300" />
               </p>
             </div>
           ) : albumState === 'endCover' ? (
             <div className="text-center pt-1">
               <p className="text-xs text-rose-200/75">
-                Photo album closed · Swipe left or tap &ldquo;Back to Last Photo&rdquo; to look again
+                Photo album closed · Swipe right or tap &ldquo;Back to Last Photo&rdquo; to look again
               </p>
             </div>
           ) : (
@@ -1495,12 +1542,12 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
                 <p className="text-[11px] text-rose-300/70 flex items-center gap-1.5">
                   {isLastSlide ? (
                     <>
-                      <span>Final page · Swipe right or tap the curled corner to close the album</span>
+                      <span>Final page · Swipe left or tap the curled corner to close the album</span>
                       <ArrowRight className="w-3 h-3 text-amber-300" />
                     </>
                   ) : (
                     <>
-                      <span>Swipe right or tap the curled page corner to turn the page</span>
+                      <span>Swipe left or tap the curled page corner to turn the page</span>
                       <ArrowRight className="w-3 h-3" />
                     </>
                   )}
