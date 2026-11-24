@@ -125,6 +125,8 @@ export default function App() {
     };
   }, []);
 
+  const readQuotaHitRef = useRef<boolean>(false);
+
   // Refresh Front-Page Password Gate config from Firestore on mount
   useEffect(() => {
     let active = true;
@@ -133,6 +135,7 @@ export default function App() {
       try {
         const cloudGate = await fetchGateConfigFromFirestore().catch(async (err) => {
           if (isQuotaExceededError(err)) {
+            readQuotaHitRef.current = true;
             setQuotaExceeded(true);
           }
           console.error('Failed to load gate config from Firestore:', err);
@@ -168,13 +171,16 @@ export default function App() {
 
     async function syncMemories() {
       try {
-        const cloudMemories = await fetchMemoriesFromFirestore().catch((err) => {
-          if (isQuotaExceededError(err)) {
-            setQuotaExceeded(true);
-          }
-          console.error('Failed to load memories from Firestore:', err);
-          return null;
-        });
+        const cloudMemories = readQuotaHitRef.current
+          ? null
+          : await fetchMemoriesFromFirestore().catch((err) => {
+              if (isQuotaExceededError(err)) {
+                readQuotaHitRef.current = true;
+                setQuotaExceeded(true);
+              }
+              console.error('Failed to load memories from Firestore:', err);
+              return null;
+            });
 
         if (!active) return;
 
@@ -199,13 +205,15 @@ export default function App() {
           });
           setIsLoadingMemories(false);
 
+          if (readQuotaHitRef.current) return;
+
           // Progressively load any uncached chunked photos in the background (cover photo first)
           const pendingChunkedPhotos = resolvedMemories.filter(
             (m) => m.type === 'photo' && m.isChunked && !m.url
           );
           if (pendingChunkedPhotos.length > 0) {
             for (let i = 0; i < pendingChunkedPhotos.length; i += 3) {
-              if (!active) break;
+              if (!active || readQuotaHitRef.current) break;
               const slice = pendingChunkedPhotos.slice(i, i + 3);
               const results = await Promise.allSettled(
                 slice.map(async (photo) => {
@@ -220,6 +228,7 @@ export default function App() {
                 (r) => r.status === 'rejected' && isQuotaExceededError(r.reason)
               );
               if (hitQuota) {
+                readQuotaHitRef.current = true;
                 if (active) setQuotaExceeded(true);
                 break;
               }
@@ -234,13 +243,16 @@ export default function App() {
     }
 
     async function syncLetter() {
-      const cloudLetter = await fetchLetterFromFirestore().catch(async (err) => {
-        if (isQuotaExceededError(err)) {
-          setQuotaExceeded(true);
-        }
-        console.error('Failed to load letter from Firestore:', err);
-        return await getCachedLetterFallback();
-      });
+      const cloudLetter = readQuotaHitRef.current
+        ? await getCachedLetterFallback()
+        : await fetchLetterFromFirestore().catch(async (err) => {
+            if (isQuotaExceededError(err)) {
+              readQuotaHitRef.current = true;
+              setQuotaExceeded(true);
+            }
+            console.error('Failed to load letter from Firestore:', err);
+            return await getCachedLetterFallback();
+          });
 
       if (!active) return;
       if (cloudLetter) {
