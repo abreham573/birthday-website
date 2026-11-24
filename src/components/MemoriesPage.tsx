@@ -17,6 +17,7 @@ import {
   RotateCcw,
 } from 'lucide-react';
 import { MemoryItem } from '../types';
+import { getReadableFirestoreErrorMessage } from '../lib/memoriesService';
 
 interface MemoriesPageProps {
   memories: MemoryItem[];
@@ -68,6 +69,7 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
   const [isAutoPlaying, setIsAutoPlaying] = useState<boolean>(false);
   const [loadingVideoId, setLoadingVideoId] = useState<string | null>(null);
   const [videoError, setVideoError] = useState<string | null>(null);
+  const [brokenImageIds, setBrokenImageIds] = useState<Record<string, boolean>>({});
 
   // Inline caption editor state (owner only)
   const [isEditingCaption, setIsEditingCaption] = useState<boolean>(false);
@@ -308,7 +310,7 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
       setIsEditingCaption(false);
     } catch (err) {
       setCaptionSaveError(
-        err instanceof Error ? err.message : 'Could not save caption right now.'
+        getReadableFirestoreErrorMessage(err, 'Could not save caption right now.')
       );
     } finally {
       setIsSavingCaption(false);
@@ -477,8 +479,17 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
   // Keyboard arrow navigation
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
+      if (e.defaultPrevented) return;
+      if (document.querySelector('[role="dialog"]')) return;
       const target = e.target as HTMLElement | null;
-      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) return;
+      if (
+        target &&
+        (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.tagName === 'SELECT')
+      ) {
+        return;
+      }
       if (e.key === 'ArrowLeft') {
         setIsAutoPlaying(false);
         paginate(-1);
@@ -604,12 +615,9 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
         setVideoError('Video could not be loaded right now.');
       }
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      if (msg.toLowerCase().includes('quota')) {
-        setVideoError('Daily free database read limit reached. Please try again tomorrow.');
-      } else {
-        setVideoError('Could not load video right now.');
-      }
+      setVideoError(
+        getReadableFirestoreErrorMessage(err, 'Could not load video right now.')
+      );
     } finally {
       setLoadingVideoId(null);
     }
@@ -1220,16 +1228,22 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
                         />
 
                         {activeItem.type === 'photo' ? (
-                          activeItem.url ? (
+                          activeItem.url && !brokenImageIds[activeItem.id] ? (
                             <img
                               src={activeItem.url}
                               alt={activeItem.title}
                               referrerPolicy="no-referrer"
                               decoding="async"
                               draggable={false}
+                              onError={() =>
+                                setBrokenImageIds((prev) => ({
+                                  ...prev,
+                                  [activeItem.id]: true,
+                                }))
+                              }
                               className="max-h-full max-w-full w-auto h-auto object-contain rounded-sm select-none"
                             />
-                          ) : activeItem.isChunked ? (
+                          ) : activeItem.isChunked && !brokenImageIds[activeItem.id] ? (
                             <div className="flex flex-col items-center justify-center text-rose-900/70 gap-2">
                               <Loader2 className="w-8 h-8 animate-spin text-rose-600" />
                               <span className="text-xs font-medium">Loading photo...</span>

@@ -92,6 +92,10 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
+  const readQuotaHitRef = useRef<boolean>(false);
+  const hasFreshCloudGateRef = useRef<boolean>(false);
+  const hasFreshCloudLetterRef = useRef<boolean>(false);
+
   // Warm gate, memories, and letter immediately from IndexedDB cache on mount (0 Firestore reads!)
   useEffect(() => {
     let active = true;
@@ -105,7 +109,7 @@ export default function App() {
 
       if (!active) return;
 
-      if (cachedGate) {
+      if (cachedGate && !hasFreshCloudGateRef.current) {
         setGateConfig(cachedGate);
         setIsLoadingGate(false);
       }
@@ -113,7 +117,7 @@ export default function App() {
         setMemories((prev) => (prev.length > 0 ? prev : cachedMemories));
         setIsLoadingMemories(false);
       }
-      if (cachedLetter) {
+      if (cachedLetter && !hasFreshCloudLetterRef.current) {
         setLetterData(cachedLetter);
       }
     }
@@ -124,8 +128,6 @@ export default function App() {
       active = false;
     };
   }, []);
-
-  const readQuotaHitRef = useRef<boolean>(false);
 
   // Refresh Front-Page Password Gate config from Firestore on mount
   useEffect(() => {
@@ -144,6 +146,7 @@ export default function App() {
 
         if (!active) return;
         if (cloudGate) {
+          hasFreshCloudGateRef.current = true;
           setGateConfig(cloudGate);
         }
       } finally {
@@ -256,6 +259,7 @@ export default function App() {
 
       if (!active) return;
       if (cloudLetter) {
+        hasFreshCloudLetterRef.current = true;
         setLetterData(cloudLetter);
       }
     }
@@ -291,16 +295,24 @@ export default function App() {
   };
 
   const handleResolveMedia = useCallback(async (id: string): Promise<string> => {
-    const resolvedUrl = await resolveChunkedMemoryUrl(id);
-    if (resolvedUrl) {
-      setMemories((prev) =>
-        prev.map((m) => (m.id === id ? { ...m, url: resolvedUrl } : m))
-      );
-      setSelectedLightboxItem((prev) =>
-        prev && prev.id === id ? { ...prev, url: resolvedUrl } : prev
-      );
+    try {
+      const resolvedUrl = await resolveChunkedMemoryUrl(id);
+      if (resolvedUrl) {
+        setMemories((prev) =>
+          prev.map((m) => (m.id === id ? { ...m, url: resolvedUrl } : m))
+        );
+        setSelectedLightboxItem((prev) =>
+          prev && prev.id === id ? { ...prev, url: resolvedUrl } : prev
+        );
+      }
+      return resolvedUrl;
+    } catch (err) {
+      if (isQuotaExceededError(err)) {
+        readQuotaHitRef.current = true;
+        setQuotaExceeded(true);
+      }
+      throw err;
     }
-    return resolvedUrl;
   }, []);
 
   const handleSignInOwner = async () => {

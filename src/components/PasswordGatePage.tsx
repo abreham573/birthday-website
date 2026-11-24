@@ -12,7 +12,7 @@ import {
   ArrowRight,
 } from 'lucide-react';
 import { AccessGateConfig } from '../types';
-import { hashGatePassword } from '../lib/memoriesService';
+import { getReadableFirestoreErrorMessage, hashGatePassword } from '../lib/memoriesService';
 
 interface PasswordGatePageProps {
   gateConfig: AccessGateConfig;
@@ -141,7 +141,7 @@ export const PasswordGatePage: React.FC<PasswordGatePageProps> = ({
     } catch (err) {
       setSaveStatus({
         type: 'error',
-        text: err instanceof Error ? err.message : 'Failed to save gate settings.',
+        text: getReadableFirestoreErrorMessage(err, 'Failed to save gate settings.'),
       });
     } finally {
       setIsSavingGate(false);
@@ -238,19 +238,19 @@ export const PasswordGatePage: React.FC<PasswordGatePageProps> = ({
               <button
                 type="button"
                 onClick={() => setShowHint((prev) => !prev)}
-                className="w-full min-h-[44px] px-4 py-2.5 flex items-center justify-between text-xs font-medium text-amber-200/90 hover:text-amber-100 hover:bg-rose-950/50 transition-colors cursor-pointer"
+                className="w-full min-h-[44px] px-4 py-2.5 flex items-center justify-between text-sm font-medium text-amber-200/90 hover:text-amber-100 hover:bg-rose-950/50 transition-colors cursor-pointer"
               >
                 <span className="flex items-center gap-2">
                   <Lightbulb className="w-4 h-4 text-amber-300 shrink-0" />
                   <span>{showHint ? 'Hint' : 'Need a hint? Tap to reveal'}</span>
                 </span>
-                <span className="text-[11px] text-rose-300/70">
+                <span className="text-xs text-rose-300/75">
                   {showHint ? 'Hide' : 'Show'}
                 </span>
               </button>
 
               {showHint && (
-                <div className="px-4 pb-3.5 pt-1 text-xs sm:text-sm text-rose-100/90 border-t border-rose-500/15 leading-relaxed font-serif-cormorant italic">
+                <div className="px-4 pb-4 pt-2.5 text-lg sm:text-xl text-rose-100/95 border-t border-rose-500/15 leading-relaxed font-serif-cormorant italic">
                   “{gateConfig.hint}”
                 </div>
               )}
@@ -318,7 +318,7 @@ export const PasswordGatePage: React.FC<PasswordGatePageProps> = ({
                       onSignInOwner().catch((err) =>
                         setSaveStatus({
                           type: 'error',
-                          text: err instanceof Error ? err.message : 'Sign-in failed.',
+                          text: getReadableFirestoreErrorMessage(err, 'Sign-in failed.'),
                         })
                       )
                     }

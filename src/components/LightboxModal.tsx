@@ -12,6 +12,7 @@ import {
   Minimize2,
 } from 'lucide-react';
 import { MemoryItem } from '../types';
+import { getReadableFirestoreErrorMessage } from '../lib/memoriesService';
 
 interface LightboxModalProps {
   item: MemoryItem | null;
@@ -83,6 +84,7 @@ export const LightboxModal: React.FC<LightboxModalProps> = ({
     setZoomIndex(2);
     setDeleteError(null);
     setIsDeleting(false);
+    setMediaError(null);
   }, [item?.id]);
 
   // Lazy-load chunked media only when opened
@@ -105,12 +107,12 @@ export const LightboxModal: React.FC<LightboxModalProps> = ({
       })
       .catch((err) => {
         if (!cancelled) {
-          const msg = err instanceof Error ? err.message : String(err);
-          if (msg.toLowerCase().includes('quota')) {
-            setMediaError('Daily free database read limit reached. Please try again tomorrow or upgrade the Firebase plan.');
-          } else {
-            setMediaError('Could not load video right now.');
-          }
+          setMediaError(
+            getReadableFirestoreErrorMessage(
+              err,
+              'Could not load this memory right now.'
+            )
+          );
         }
       })
       .finally(() => {
@@ -127,12 +129,22 @@ export const LightboxModal: React.FC<LightboxModalProps> = ({
     if (!item) return;
 
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-      if (e.key === 'ArrowLeft') handlePrev();
-      if (e.key === 'ArrowRight') handleNext();
-      if (e.key === '+' || e.key === '=') handleZoomIn();
-      if (e.key === '-') handleZoomOut();
-      if (e.key === '0') handleResetZoom();
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        onClose();
+      } else if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        handlePrev();
+      } else if (e.key === 'ArrowRight') {
+        e.preventDefault();
+        handleNext();
+      } else if (e.key === '+' || e.key === '=') {
+        handleZoomIn();
+      } else if (e.key === '-') {
+        handleZoomOut();
+      } else if (e.key === '0') {
+        handleResetZoom();
+      }
     };
 
     window.addEventListener('keydown', handleKeyDown);
@@ -147,6 +159,9 @@ export const LightboxModal: React.FC<LightboxModalProps> = ({
 
   return (
     <div
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
       className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-5 bg-black/90 backdrop-blur-xl animate-in fade-in duration-200"
       role="dialog"
       aria-modal="true"
@@ -287,6 +302,7 @@ export const LightboxModal: React.FC<LightboxModalProps> = ({
               alt={item.title}
               referrerPolicy="no-referrer"
               onDoubleClick={() => setZoomIndex((prev) => (prev === 2 ? 4 : 2))}
+              onError={() => setMediaError('Photo could not be loaded right now.')}
               className={`select-none transition-all duration-200 mx-auto ${
                 ZOOM_CLASS_MAP[zoom] ?? ZOOM_CLASS_MAP[1]
               } ${zoom > 1 ? 'cursor-zoom-out' : 'cursor-zoom-in'}`}
@@ -297,7 +313,12 @@ export const LightboxModal: React.FC<LightboxModalProps> = ({
               controls
               autoPlay
               playsInline
-              className="w-full h-full object-contain"
+              onError={() => setMediaError('Video could not be played right now.')}
+              className={`object-contain mx-auto ${
+                isExpanded
+                  ? 'max-h-full max-w-full w-auto h-auto'
+                  : 'max-h-[64vh] sm:max-h-[68vh] max-w-full w-auto h-auto'
+              }`}
             />
           )}
         </div>
@@ -325,11 +346,11 @@ export const LightboxModal: React.FC<LightboxModalProps> = ({
                       await onDelete(item.id);
                       onClose();
                     } catch (err) {
-                      const msg = err instanceof Error ? err.message : String(err);
                       setDeleteError(
-                        msg.toLowerCase().includes('quota')
-                          ? 'Daily free database write limit reached. Cannot remove right now.'
-                          : 'Could not remove this memory right now.'
+                        getReadableFirestoreErrorMessage(
+                          err,
+                          'Could not remove this memory right now.'
+                        )
                       );
                     } finally {
                       setIsDeleting(false);

@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { LoveLetterData } from '../types';
 import { DEFAULT_LOVE_LETTER } from '../data/defaultLetter';
+import { getReadableFirestoreErrorMessage } from '../lib/memoriesService';
 
 interface LoveLetterPageProps {
   letterData: LoveLetterData;
@@ -44,12 +45,17 @@ export const LoveLetterPage: React.FC<LoveLetterPageProps> = ({
   const [isSaving, setIsSaving] = useState<boolean>(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [photoSaveStatus, setPhotoSaveStatus] = useState<string | null>(null);
+  const [bottomPhotoFailed, setBottomPhotoFailed] = useState<boolean>(false);
   const openTimerRef = useRef<number | null>(null);
 
   const bottomPhotoUrl =
     letterData.bottomPhotoUrl || DEFAULT_LOVE_LETTER.bottomPhotoUrl || '';
   const bottomPhotoCaption =
     letterData.bottomPhotoCaption || DEFAULT_LOVE_LETTER.bottomPhotoCaption || '';
+
+  useEffect(() => {
+    setBottomPhotoFailed(false);
+  }, [bottomPhotoUrl]);
 
   useEffect(() => {
     if (!isEditing) {
@@ -103,7 +109,7 @@ export const LoveLetterPage: React.FC<LoveLetterPageProps> = ({
       setIsEditing(false);
     } catch (err) {
       setSaveError(
-        err instanceof Error ? err.message : 'Could not save changes to cloud.'
+        getReadableFirestoreErrorMessage(err, 'Could not save changes to cloud.')
       );
     } finally {
       setIsSaving(false);
@@ -404,7 +410,7 @@ export const LoveLetterPage: React.FC<LoveLetterPageProps> = ({
                           onClick={() =>
                             onSignInOwner().catch((err) =>
                               setSaveError(
-                                err instanceof Error ? err.message : 'Sign-in failed'
+                                getReadableFirestoreErrorMessage(err, 'Sign-in failed.')
                               )
                             )
                           }
@@ -596,7 +602,7 @@ export const LoveLetterPage: React.FC<LoveLetterPageProps> = ({
                   </div>
 
                   {/* Keepsake Polaroid Photo Pinned at the Bottom of the Letter Paper */}
-                  {bottomPhotoUrl && (
+                  {bottomPhotoUrl && !bottomPhotoFailed && (
                     <div
                       className="pt-8 mt-6 border-t border-rose-900/15 flex flex-col items-center"
                       onClick={(e) => e.stopPropagation()}
@@ -612,6 +618,7 @@ export const LoveLetterPage: React.FC<LoveLetterPageProps> = ({
                           src={bottomPhotoUrl}
                           alt={bottomPhotoCaption || 'My Shayla'}
                           referrerPolicy="no-referrer"
+                          onError={() => setBottomPhotoFailed(true)}
                           className="w-full max-h-[380px] object-contain rounded-lg bg-amber-50/40 block mx-auto"
                         />
 
@@ -639,9 +646,10 @@ export const LoveLetterPage: React.FC<LoveLetterPageProps> = ({
                                 setPhotoSaveStatus('Photo & caption saved to database ❤️');
                               } catch (err) {
                                 setPhotoSaveStatus(
-                                  err instanceof Error
-                                    ? err.message
-                                    : 'Could not save to database right now.'
+                                  getReadableFirestoreErrorMessage(
+                                    err,
+                                    'Could not save to database right now.'
+                                  )
                                 );
                               } finally {
                                 setIsSaving(false);

@@ -18,6 +18,7 @@ import {
   uploadMemoryFileToFirestore,
   saveMemoryUrlToFirestore,
   isQuotaExceededError,
+  getReadableFirestoreErrorMessage,
 } from '../lib/memoriesService';
 import { OWNER_EMAIL } from '../lib/firebase';
 
@@ -211,16 +212,13 @@ export const AddMediaModal: React.FC<AddMediaModalProps> = ({
         }
         if (isQuotaExceededError(uploadErr)) {
           onQuotaExceeded?.();
-          setError(
-            'Daily free Firestore quota limit reached. Free daily limits reset tomorrow, or you can upgrade your database plan in Firebase Console.'
-          );
-        } else {
-          setError(
-            uploadErr instanceof Error
-              ? uploadErr.message
-              : 'Failed to save to cloud. Please try again.'
-          );
         }
+        setError(
+          getReadableFirestoreErrorMessage(
+            uploadErr,
+            'Failed to save to cloud. Please try again.'
+          )
+        );
       } finally {
         setIsUploading(false);
         setUploadStatus('');
@@ -252,16 +250,13 @@ export const AddMediaModal: React.FC<AddMediaModalProps> = ({
       } catch (err) {
         if (isQuotaExceededError(err)) {
           onQuotaExceeded?.();
-          setError(
-            'Daily free Firestore quota limit reached. Free daily limits reset tomorrow, or you can upgrade your database plan in Firebase Console.'
-          );
-        } else {
-          setError(
-            err instanceof Error
-              ? err.message
-              : 'Could not save link. Please try again.'
-          );
         }
+        setError(
+          getReadableFirestoreErrorMessage(
+            err,
+            'Could not save link. Please try again.'
+          )
+        );
       } finally {
         setIsUploading(false);
         setUploadStatus('');

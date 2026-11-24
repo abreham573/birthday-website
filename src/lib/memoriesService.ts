@@ -46,6 +46,45 @@ export function isQuotaExceededError(err: unknown): boolean {
   );
 }
 
+export function getReadableFirestoreErrorMessage(
+  err: unknown,
+  fallback = 'Could not complete this request right now. Please try again.'
+): string {
+  const raw = err instanceof Error ? err.message : String(err);
+  let extracted = raw;
+
+  // Unwrap JSON payload thrown by handleFirestoreError
+  if (raw.trim().startsWith('{')) {
+    try {
+      const parsed = JSON.parse(raw) as { error?: unknown };
+      if (typeof parsed.error === 'string' && parsed.error.trim().length > 0) {
+        extracted = parsed.error;
+      }
+    } catch {
+      // Keep original message
+    }
+  }
+
+  const lower = extracted.toLowerCase();
+  if (
+    lower.includes('quota exceeded') ||
+    lower.includes('quota limit exceeded') ||
+    lower.includes('resource-exhausted')
+  ) {
+    return 'Daily free database quota limit reached. Free limits reset tomorrow, or you can upgrade in Firebase Console.';
+  }
+  if (lower.includes('missing or insufficient permissions') || lower.includes('permission-denied')) {
+    return 'Permission denied. Please make sure you are signed in with the creator Google account.';
+  }
+  if (lower.includes('client is offline') || lower.includes('unavailable') || lower.includes('network')) {
+    return 'Could not reach the cloud database right now. Please check your connection and try again.';
+  }
+
+  return extracted.trim().length > 0 && !extracted.trim().startsWith('{')
+    ? extracted
+    : fallback;
+}
+
 function sanitizeId(raw: string): string {
   return raw.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 100);
 }
@@ -98,7 +137,7 @@ async function compressImageFile(file: File): Promise<{ dataUrl: string; mimeTyp
     return { dataUrl: await readFileAsDataUrl(file), mimeType: file.type };
   }
 
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const img = new Image();
     const objectUrl = URL.createObjectURL(file);
 
@@ -145,15 +184,23 @@ async function compressImageFile(file: File): Promise<{ dataUrl: string; mimeTyp
 
         resolve({ dataUrl: output, mimeType: 'image/jpeg' });
       } catch {
-        const fallbackUrl = await readFileAsDataUrl(file);
-        resolve({ dataUrl: fallbackUrl, mimeType: file.type || 'image/jpeg' });
+        try {
+          const fallbackUrl = await readFileAsDataUrl(file);
+          resolve({ dataUrl: fallbackUrl, mimeType: file.type || 'image/jpeg' });
+        } catch (readErr) {
+          reject(readErr);
+        }
       }
     };
 
     img.onerror = async () => {
       URL.revokeObjectURL(objectUrl);
-      const fallbackUrl = await readFileAsDataUrl(file);
-      resolve({ dataUrl: fallbackUrl, mimeType: file.type || 'image/jpeg' });
+      try {
+        const fallbackUrl = await readFileAsDataUrl(file);
+        resolve({ dataUrl: fallbackUrl, mimeType: file.type || 'image/jpeg' });
+      } catch (readErr) {
+        reject(readErr);
+      }
     };
 
     img.src = objectUrl;
