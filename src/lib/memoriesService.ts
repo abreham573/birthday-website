@@ -23,12 +23,14 @@ import {
   getCachedLetter,
   getCachedMediaBlob,
   getCachedMemoriesList,
+  getCachedSongConfig,
   saveCachedGateConfig,
   saveCachedLetter,
   saveCachedMediaBlob,
   saveCachedMemoriesList,
+  saveCachedSongConfig,
 } from './mediaCache';
-import { AccessGateConfig, LoveLetterData, MemoryItem } from '../types';
+import { AccessGateConfig, LoveLetterData, MemoryItem, SongConfig } from '../types';
 import { DEFAULT_LOVE_LETTER } from '../data/defaultLetter';
 
 const CHUNK_SIZE = 650000;
@@ -462,9 +464,17 @@ export async function saveMemoryUrlToFirestore(params: {
 
 const inFlightChunkResolutions = new Map<string, Promise<string>>();
 
-export async function resolveChunkedMemoryUrl(memoryId: string): Promise<string> {
+export async function resolveChunkedMemoryUrl(
+  memoryId: string,
+  options?: { cacheOnly?: boolean }
+): Promise<string> {
   const existingUrl = resolvedObjectUrlMap.get(memoryId);
   if (existingUrl) return existingUrl;
+
+  if (options?.cacheOnly) {
+    const cachedBlob = await getCachedMediaBlob(memoryId);
+    return cachedBlob ? getOrCreateObjectUrl(memoryId, cachedBlob) : '';
+  }
 
   const existing = inFlightChunkResolutions.get(memoryId);
   if (existing) return existing;
@@ -986,6 +996,143 @@ export async function saveGateConfigToFirestore(params: {
     };
     await saveCachedGateConfig(updated);
     return updated;
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, path);
+  }
+}
+
+// ============================================================
+// Dedicated Song, Lyrics & Meaning Helpers
+// ============================================================
+
+export const DEFAULT_SONG_CONFIG: SongConfig = {
+  songTitle: 'All I Ever Need',
+  artistName: 'Austin Mahone',
+  youtubeUrl: 'https://www.youtube.com/watch?v=ZAC_k1HUyE4',
+  dedicationHeading: 'A Song That Speaks What Words Cannot',
+  dedicationBody:
+    'Tsi, whenever Austin Mahone sings "Baby you\'re all I ever need, you\'re amazing, you\'re my angel...", every line feels like it was written directly about you. On your birthday, I want you to remember that having you by my side is the greatest blessing I could ever ask for.',
+  lyricsText: [
+    "Don't the water grow the trees?",
+    "Don't the moon pull the tide?",
+    "Don't the stars illuminate the night from the sky?",
+    "It's human nature, and when you smile at the world",
+    'Comes right back to you...',
+    "*Baby you're all I ever need",
+    "*Baby you're amazing, you're my angel",
+    "*You're the only one I see",
+    "*And you're all I ever need...",
+  ].join('\n'),
+  meaning: '',
+};
+
+export async function fetchSongConfigFromFirestore(): Promise<SongConfig | null> {
+  const path = 'song/config';
+  try {
+    const snap = await getDoc(doc(db, 'song', 'config'));
+    if (!snap.exists()) return null;
+    const data = snap.data();
+    const song: SongConfig = {
+      songTitle:
+        typeof data.songTitle === 'string' && data.songTitle.trim().length > 0
+          ? data.songTitle
+          : DEFAULT_SONG_CONFIG.songTitle,
+      artistName:
+        typeof data.artistName === 'string' && data.artistName.trim().length > 0
+          ? data.artistName
+          : DEFAULT_SONG_CONFIG.artistName,
+      youtubeUrl:
+        typeof data.youtubeUrl === 'string' && /^https?:\/\/.+/.test(data.youtubeUrl)
+          ? data.youtubeUrl
+          : DEFAULT_SONG_CONFIG.youtubeUrl,
+      dedicationHeading:
+        typeof data.dedicationHeading === 'string' &&
+        data.dedicationHeading.trim().length > 0
+          ? data.dedicationHeading
+          : DEFAULT_SONG_CONFIG.dedicationHeading,
+      dedicationBody:
+        typeof data.dedicationBody === 'string' && data.dedicationBody.trim().length > 0
+          ? data.dedicationBody
+          : DEFAULT_SONG_CONFIG.dedicationBody,
+      lyricsText:
+        typeof data.lyricsText === 'string' && data.lyricsText.trim().length > 0
+          ? data.lyricsText
+          : DEFAULT_SONG_CONFIG.lyricsText,
+      meaning: typeof data.meaning === 'string' ? data.meaning : DEFAULT_SONG_CONFIG.meaning,
+    };
+    await saveCachedSongConfig(song);
+    return song;
+  } catch (error) {
+    handleFirestoreError(error, OperationType.GET, path);
+  }
+}
+
+export async function getCachedSongConfigFallback(): Promise<SongConfig | null> {
+  return getCachedSongConfig();
+}
+
+export async function saveSongConfigToFirestore(
+  song: SongConfig,
+  authorId: string
+): Promise<SongConfig> {
+  const path = 'song/config';
+  const songRef = doc(db, 'song', 'config');
+
+  const safeYoutubeUrl = song.youtubeUrl.trim().slice(0, 500);
+  if (!/^https?:\/\/.+/i.test(safeYoutubeUrl)) {
+    throw new Error('Please enter a valid http:// or https:// YouTube link.');
+  }
+
+  const safeSongTitle =
+    song.songTitle.trim().slice(0, 120) || DEFAULT_SONG_CONFIG.songTitle;
+  const safeArtistName =
+    song.artistName.trim().slice(0, 120) || DEFAULT_SONG_CONFIG.artistName;
+  const safeDedicationHeading =
+    song.dedicationHeading.trim().slice(0, 160) || DEFAULT_SONG_CONFIG.dedicationHeading;
+  const safeDedicationBody =
+    song.dedicationBody.trim().slice(0, 2000) || DEFAULT_SONG_CONFIG.dedicationBody;
+  const safeLyricsText =
+    song.lyricsText.trim().slice(0, 4000) || DEFAULT_SONG_CONFIG.lyricsText;
+  const safeMeaning = song.meaning.trim().slice(0, 2000);
+
+  try {
+    const existing = await getDoc(songRef);
+    if (!existing.exists()) {
+      await setDoc(songRef, {
+        songTitle: safeSongTitle,
+        artistName: safeArtistName,
+        youtubeUrl: safeYoutubeUrl,
+        dedicationHeading: safeDedicationHeading,
+        dedicationBody: safeDedicationBody,
+        lyricsText: safeLyricsText,
+        meaning: safeMeaning,
+        authorId,
+        updatedAt: serverTimestamp(),
+      });
+    } else {
+      await updateDoc(songRef, {
+        songTitle: safeSongTitle,
+        artistName: safeArtistName,
+        youtubeUrl: safeYoutubeUrl,
+        dedicationHeading: safeDedicationHeading,
+        dedicationBody: safeDedicationBody,
+        lyricsText: safeLyricsText,
+        meaning: safeMeaning,
+        updatedAt: serverTimestamp(),
+      });
+    }
+
+    const saved: SongConfig = {
+      songTitle: safeSongTitle,
+      artistName: safeArtistName,
+      youtubeUrl: safeYoutubeUrl,
+      dedicationHeading: safeDedicationHeading,
+      dedicationBody: safeDedicationBody,
+      lyricsText: safeLyricsText,
+      meaning: safeMeaning,
+    };
+    await saveCachedSongConfig(saved);
+    return saved;
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, path);
   }

@@ -1,18 +1,51 @@
-import React from 'react';
-import { ExternalLink, Heart, Sparkles, Youtube, Camera } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import {
+  ExternalLink,
+  Heart,
+  Sparkles,
+  Youtube,
+  Camera,
+  Edit3,
+  Check,
+  Loader2,
+  Lock,
+} from 'lucide-react';
 import confetti from 'canvas-confetti';
 import austinCover from '../assets/images/austin_mahone_cover_1794420838531.jpg';
+import { SongConfig } from '../types';
+import {
+  DEFAULT_SONG_CONFIG,
+  getReadableFirestoreErrorMessage,
+} from '../lib/memoriesService';
 
 interface SongPageProps {
+  songConfig?: SongConfig;
+  isOwner?: boolean;
+  onSignInOwner?: () => Promise<void>;
+  onUpdateSong?: (updated: SongConfig) => Promise<void>;
   onNavigateToMemories: () => void;
   onNavigateToLetter: () => void;
 }
 
 export const SongPage: React.FC<SongPageProps> = ({
+  songConfig = DEFAULT_SONG_CONFIG,
+  isOwner = false,
+  onSignInOwner,
+  onUpdateSong,
   onNavigateToMemories,
   onNavigateToLetter,
 }) => {
-  const YOUTUBE_URL = 'https://www.youtube.com/watch?v=ZAC_k1HUyE4';
+  const [isEditing, setIsEditing] = useState<boolean>(false);
+  const [draft, setDraft] = useState<SongConfig>(songConfig);
+  const [isSaving, setIsSaving] = useState<boolean>(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [saveSuccess, setSaveSuccess] = useState<boolean>(false);
+
+  useEffect(() => {
+    if (!isEditing) {
+      setDraft(songConfig);
+    }
+  }, [songConfig, isEditing]);
 
   const triggerCelebration = () => {
     confetti({
@@ -23,17 +56,51 @@ export const SongPage: React.FC<SongPageProps> = ({
     });
   };
 
-  const songLyrics = [
-    { type: 'verse', text: "Don't the water grow the trees?" },
-    { type: 'verse', text: "Don't the moon pull the tide?" },
-    { type: 'verse', text: "Don't the stars illuminate the night from the sky?" },
-    { type: 'verse', text: "It's human nature, and when you smile at the world" },
-    { type: 'verse', text: "Comes right back to you..." },
-    { type: 'chorus', text: "Baby you're all I ever need" },
-    { type: 'chorus', text: "Baby you're amazing, you're my angel" },
-    { type: 'chorus', text: "You're the only one I see" },
-    { type: 'chorus', text: "And you're all I ever need..." },
-  ];
+  const parsedLyrics = songConfig.lyricsText
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .map((line) => {
+      if (line.startsWith('*')) {
+        return {
+          type: 'chorus' as const,
+          text: line.slice(1).trim(),
+        };
+      }
+      return {
+        type: 'verse' as const,
+        text: line,
+      };
+    });
+
+  const handleSave = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSaveError(null);
+    setSaveSuccess(false);
+
+    if (!isOwner || !onUpdateSong) {
+      setSaveError(
+        'Please sign in with your creator Google account to save lyrics & meaning changes.'
+      );
+      return;
+    }
+
+    setIsSaving(true);
+    try {
+      await onUpdateSong(draft);
+      setIsEditing(false);
+      setSaveSuccess(true);
+    } catch (err) {
+      setSaveError(
+        getReadableFirestoreErrorMessage(
+          err,
+          'Could not save lyrics & meaning right now.'
+        )
+      );
+    } finally {
+      setIsSaving(false);
+    }
+  };
 
   return (
     <div className="relative min-h-[calc(100vh-4rem)] pb-28 pt-4 sm:pt-8 max-w-5xl mx-auto px-4 sm:px-6">
@@ -46,158 +113,398 @@ export const SongPage: React.FC<SongPageProps> = ({
         </div>
 
         <h1 className="font-serif-cormorant text-3xl sm:text-5xl font-bold text-white tracking-tight leading-tight">
-          All I Ever Need · <span className="text-transparent bg-clip-text bg-gradient-to-r from-rose-300 via-rose-100 to-amber-200">Austin Mahone</span>
+          {songConfig.songTitle} ·{' '}
+          <span className="text-transparent bg-clip-text bg-gradient-to-r from-rose-300 via-rose-100 to-amber-200">
+            {songConfig.artistName}
+          </span>
         </h1>
 
         <p className="mt-3 text-sm sm:text-base text-rose-200/80 max-w-xl mx-auto font-light leading-relaxed">
-          This song was chosen especially for your birthday, Tsi. Click below to open and listen to it on YouTube.
+          This song was chosen especially for your birthday, Tsi. Read what is written for you below first, then open it on YouTube at the bottom.
         </p>
 
-        {/* PRIMARY DIRECT YOUTUBE REDIRECT BUTTON */}
-        <div className="mt-7 flex flex-wrap items-center justify-center gap-4">
-          <a
-            href={YOUTUBE_URL}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex items-center gap-3 px-8 py-4 text-base font-bold text-white bg-gradient-to-r from-red-600 via-rose-600 to-red-700 rounded-2xl hover:from-red-500 hover:to-rose-500 shadow-2xl shadow-red-950/70 hover:scale-105 active:scale-95 transition-all group border border-rose-400/30"
-          >
-            <div className="w-7 h-7 rounded-full bg-white/20 flex items-center justify-center group-hover:bg-white/30 transition-colors">
-              <Youtube className="w-5 h-5 fill-current text-white" />
-            </div>
-            <span>Open & Listen on YouTube</span>
-            <ExternalLink className="w-4 h-4 ml-1 opacity-90" />
-          </a>
-
-          <button
-            onClick={triggerCelebration}
-            className="flex items-center gap-2 px-6 py-4 text-sm font-semibold text-rose-200 bg-rose-950/60 border border-rose-500/30 rounded-2xl hover:bg-rose-900/40 hover:text-white transition-colors"
-          >
-            <Sparkles className="w-4 h-4 text-amber-300" />
-            <span>Celebrate Tsi's Birthday 🎂</span>
-          </button>
-        </div>
+        {isOwner && onUpdateSong && (
+          <div className="mt-5 flex justify-center">
+            <button
+              type="button"
+              disabled={isSaving}
+              onClick={() => {
+                setSaveError(null);
+                setSaveSuccess(false);
+                if (isEditing) {
+                  setDraft(songConfig);
+                  setIsEditing(false);
+                } else {
+                  setDraft(songConfig);
+                  setIsEditing(true);
+                }
+              }}
+              className="inline-flex items-center gap-1.5 text-xs text-rose-200 hover:text-white bg-rose-950/70 hover:bg-rose-900/70 px-4 py-2 rounded-xl border border-rose-500/30 transition-colors cursor-pointer disabled:opacity-50"
+            >
+              {isEditing ? (
+                <>
+                  <Check className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>Done Editing</span>
+                </>
+              ) : (
+                <>
+                  <Edit3 className="w-3.5 h-3.5" />
+                  <span>Edit Lyrics &amp; Meaning</span>
+                </>
+              )}
+            </button>
+          </div>
+        )}
       </section>
 
-      {/* Visualizer Card & Lyrics Split Layout */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start mb-12">
-        {/* Left Column: Dedicated Song Showcase Card (5 cols) */}
-        <div className="lg:col-span-5 romantic-card rounded-3xl p-6 sm:p-8 text-center flex flex-col items-center">
-          <span className="text-[11px] font-semibold text-rose-400 uppercase tracking-widest mb-3">
-            Austin Mahone · Official Music
-          </span>
+      {/* Creator Editor or Written Dedication & Lyrics First */}
+      <div className="max-w-3xl mx-auto space-y-6 mb-10">
+        {isEditing ? (
+          <form
+            onSubmit={handleSave}
+            className="romantic-card rounded-3xl p-6 sm:p-8 space-y-5 border border-rose-500/30"
+          >
+            <div className="flex items-center justify-between border-b border-rose-500/15 pb-3">
+              <span className="text-xs font-semibold uppercase tracking-wider text-rose-300">
+                Edit Song, Lyrics &amp; Meaning
+              </span>
+              <span className="text-[11px] text-rose-300/60">
+                Saves to cloud for Tsi
+              </span>
+            </div>
 
+            {!isOwner && (
+              <div className="p-3.5 rounded-xl bg-rose-950/60 border border-rose-500/30 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div className="flex items-center gap-2 text-xs text-rose-200">
+                  <Lock className="w-4 h-4 text-rose-400 shrink-0" />
+                  <span>
+                    Sign in with your creator Google account to save changes.
+                  </span>
+                </div>
+                {onSignInOwner && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      onSignInOwner().catch((err) =>
+                        setSaveError(
+                          getReadableFirestoreErrorMessage(err, 'Sign-in failed.')
+                        )
+                      )
+                    }
+                    className="px-3.5 py-1.5 bg-rose-600 hover:bg-rose-500 text-white rounded-lg text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer"
+                  >
+                    Sign In with Google
+                  </button>
+                )}
+              </div>
+            )}
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-semibold text-rose-200/90 uppercase tracking-wider mb-1">
+                  Song Title
+                </label>
+                <input
+                  type="text"
+                  required
+                  maxLength={120}
+                  value={draft.songTitle}
+                  onChange={(e) => setDraft({ ...draft, songTitle: e.target.value })}
+                  className="w-full bg-black/45 border border-rose-500/30 rounded-xl px-3.5 py-2 text-sm text-white focus:outline-none focus:border-rose-400"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-rose-200/90 uppercase tracking-wider mb-1">
+                  Artist
+                </label>
+                <input
+                  type="text"
+                  required
+                  maxLength={120}
+                  value={draft.artistName}
+                  onChange={(e) => setDraft({ ...draft, artistName: e.target.value })}
+                  className="w-full bg-black/45 border border-rose-500/30 rounded-xl px-3.5 py-2 text-sm text-white focus:outline-none focus:border-rose-400"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-rose-200/90 uppercase tracking-wider mb-1">
+                Dedication Heading
+              </label>
+              <input
+                type="text"
+                required
+                maxLength={160}
+                value={draft.dedicationHeading}
+                onChange={(e) =>
+                  setDraft({ ...draft, dedicationHeading: e.target.value })
+                }
+                className="w-full bg-black/45 border border-rose-500/30 rounded-xl px-3.5 py-2 text-sm text-white focus:outline-none focus:border-rose-400"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-rose-200/90 uppercase tracking-wider mb-1">
+                Why This Song Is Dedicated To You
+              </label>
+              <textarea
+                rows={4}
+                required
+                maxLength={2000}
+                value={draft.dedicationBody}
+                onChange={(e) =>
+                  setDraft({ ...draft, dedicationBody: e.target.value })
+                }
+                className="w-full bg-black/45 border border-rose-500/30 rounded-xl p-3 text-sm text-white focus:outline-none focus:border-rose-400 leading-relaxed"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-rose-200/90 uppercase tracking-wider mb-1">
+                Song Lyrics
+              </label>
+              <textarea
+                rows={9}
+                required
+                maxLength={4000}
+                value={draft.lyricsText}
+                onChange={(e) => setDraft({ ...draft, lyricsText: e.target.value })}
+                placeholder="Write each lyric line on a new line..."
+                className="w-full bg-black/45 border border-rose-500/30 rounded-xl p-3 text-base text-white font-serif-cormorant focus:outline-none focus:border-rose-400 leading-relaxed"
+              />
+              <p className="mt-1 text-[11px] text-rose-300/70">
+                Tip: Start a line with <span className="font-mono text-rose-200">*</span> to highlight it as a bold chorus line.
+              </p>
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-rose-200/90 uppercase tracking-wider mb-1">
+                Meaning Behind These Lyrics (Optional)
+              </label>
+              <textarea
+                rows={4}
+                maxLength={2000}
+                value={draft.meaning}
+                onChange={(e) => setDraft({ ...draft, meaning: e.target.value })}
+                placeholder="Write what these lyrics mean to you and Tsi..."
+                className="w-full bg-black/45 border border-rose-500/30 rounded-xl p-3 text-sm text-white focus:outline-none focus:border-rose-400 leading-relaxed"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-rose-200/90 uppercase tracking-wider mb-1">
+                YouTube Link
+              </label>
+              <input
+                type="url"
+                required
+                maxLength={500}
+                value={draft.youtubeUrl}
+                onChange={(e) => setDraft({ ...draft, youtubeUrl: e.target.value })}
+                placeholder="https://www.youtube.com/watch?v=..."
+                className="w-full bg-black/45 border border-rose-500/30 rounded-xl px-3.5 py-2 text-xs text-white focus:outline-none focus:border-rose-400"
+              />
+            </div>
+
+            {saveError && (
+              <p className="text-xs text-red-300 bg-red-950/60 border border-red-500/35 rounded-xl p-3">
+                {saveError}
+              </p>
+            )}
+
+            <div className="flex items-center justify-end gap-3 pt-2">
+              <button
+                type="button"
+                disabled={isSaving}
+                onClick={() => {
+                  setDraft(songConfig);
+                  setSaveError(null);
+                  setIsEditing(false);
+                }}
+                className="px-4 py-2 text-xs font-medium text-rose-300 hover:text-white rounded-xl transition-colors cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={isSaving}
+                className="inline-flex items-center gap-2 px-5 py-2.5 text-xs font-semibold text-white bg-gradient-to-r from-rose-600 to-red-700 hover:from-rose-500 hover:to-red-600 rounded-xl shadow-lg transition-all cursor-pointer disabled:opacity-60"
+              >
+                {isSaving ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <Check className="w-3.5 h-3.5" />
+                )}
+                <span>{isSaving ? 'Saving...' : 'Save Lyrics & Meaning'}</span>
+              </button>
+            </div>
+          </form>
+        ) : (
+          <>
+            {saveSuccess && (
+              <div className="rounded-2xl bg-emerald-950/60 border border-emerald-500/35 px-4 py-2.5 text-xs text-emerald-200 flex items-center justify-between">
+                <span>Lyrics &amp; meaning saved! Tsi will see your updated words.</span>
+                <button
+                  type="button"
+                  onClick={() => setSaveSuccess(false)}
+                  className="text-emerald-300/80 hover:text-white underline cursor-pointer"
+                >
+                  Dismiss
+                </button>
+              </div>
+            )}
+
+            {/* Dedication Note Card */}
+            <div className="romantic-card rounded-3xl p-6 sm:p-8">
+              <div className="flex items-center justify-between gap-2 mb-2">
+                <div className="flex items-center gap-2 text-rose-400">
+                  <Heart className="w-4 h-4 fill-current" />
+                  <span className="text-xs font-semibold uppercase tracking-wider">
+                    Why This Song Is Dedicated To You
+                  </span>
+                </div>
+                {isOwner && onUpdateSong && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDraft(songConfig);
+                      setSaveError(null);
+                      setIsEditing(true);
+                    }}
+                    className="inline-flex items-center gap-1 text-[11px] text-rose-300/80 hover:text-white transition-colors cursor-pointer"
+                  >
+                    <Edit3 className="w-3 h-3" />
+                    <span>Edit</span>
+                  </button>
+                )}
+              </div>
+              <h3 className="font-serif-cormorant text-xl sm:text-2xl font-bold text-white">
+                {songConfig.dedicationHeading}
+              </h3>
+              <p className="text-xs sm:text-sm text-rose-200/90 mt-2 leading-relaxed font-light whitespace-pre-line">
+                {songConfig.dedicationBody}
+              </p>
+            </div>
+
+            {/* Romantic Lyrics & Meaning Card */}
+            <div className="romantic-card rounded-3xl p-6 sm:p-8">
+              <div className="flex items-center justify-between gap-2 mb-4 border-b border-rose-500/15 pb-3">
+                <span className="text-xs font-semibold text-rose-300 uppercase tracking-wider">
+                  Lyrics &amp; Meaning
+                </span>
+                <div className="flex items-center gap-3">
+                  <span className="text-xs text-rose-400/80">
+                    {songConfig.artistName} · {songConfig.songTitle}
+                  </span>
+                  {isOwner && onUpdateSong && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setDraft(songConfig);
+                        setSaveError(null);
+                        setIsEditing(true);
+                      }}
+                      className="inline-flex items-center gap-1 text-[11px] text-amber-200/90 hover:text-white transition-colors cursor-pointer"
+                    >
+                      <Edit3 className="w-3 h-3" />
+                      <span>Edit</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              <div className="space-y-3 font-serif-cormorant text-base sm:text-lg">
+                {parsedLyrics.map((line, index) => (
+                  <p
+                    key={index}
+                    className={`transition-all duration-300 ${
+                      line.type === 'chorus'
+                        ? 'text-rose-200 font-bold italic text-lg sm:text-xl pl-3 border-l-2 border-rose-500'
+                        : 'text-rose-300/80 font-normal'
+                    }`}
+                  >
+                    &ldquo;{line.text}&rdquo;
+                  </p>
+                ))}
+              </div>
+
+              {songConfig.meaning.trim().length > 0 && (
+                <div className="mt-6 pt-5 border-t border-rose-500/15">
+                  <p className="text-[11px] font-semibold uppercase tracking-wider text-amber-200/85 mb-1.5">
+                    What These Words Mean To Us
+                  </p>
+                  <p className="text-xs sm:text-sm text-rose-100/90 leading-relaxed font-light whitespace-pre-line">
+                    {songConfig.meaning}
+                  </p>
+                </div>
+              )}
+            </div>
+          </>
+        )}
+
+        {/* Dedicated Song YouTube Link Section at the Bottom */}
+        <div className="romantic-card rounded-3xl p-6 sm:p-8 flex flex-col sm:flex-row items-center gap-6 sm:gap-8">
           {/* Album Cover Art / Clickable to YouTube */}
           <a
-            href={YOUTUBE_URL}
+            href={songConfig.youtubeUrl}
             target="_blank"
             rel="noopener noreferrer"
-            className="relative my-4 block group cursor-pointer"
+            className="relative block group cursor-pointer shrink-0"
             title="Click to redirect to YouTube"
           >
-            <div className="relative w-48 h-48 sm:w-56 sm:h-56 rounded-3xl shadow-2xl border-2 border-rose-500/30 overflow-hidden group-hover:border-rose-400/60 transition-all">
+            <div className="relative w-40 h-40 sm:w-44 sm:h-44 rounded-3xl shadow-2xl border-2 border-rose-500/30 overflow-hidden group-hover:border-rose-400/60 transition-all">
               <img
                 src={austinCover}
-                alt="Austin Mahone - All I Ever Need cover art"
+                alt={`${songConfig.artistName} - ${songConfig.songTitle} cover art`}
                 className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
               />
               {/* Play overlay on hover */}
               <div className="absolute inset-0 bg-red-950/50 flex flex-col items-center justify-center gap-2 opacity-90 group-hover:opacity-100 group-hover:bg-red-950/40 transition-all">
-                <div className="w-14 h-14 rounded-full bg-red-600 text-white flex items-center justify-center shadow-xl group-hover:scale-110 transition-transform">
-                  <Youtube className="w-8 h-8 fill-current ml-0.5" />
+                <div className="w-12 h-12 rounded-full bg-red-600 text-white flex items-center justify-center shadow-xl group-hover:scale-110 transition-transform">
+                  <Youtube className="w-7 h-7 fill-current ml-0.5" />
                 </div>
-                <span className="text-xs font-semibold text-white px-3 py-1 rounded-full bg-black/60 backdrop-blur-sm flex items-center gap-1">
-                  <span>Redirect to YouTube</span>
+                <span className="text-[11px] font-semibold text-white px-2.5 py-1 rounded-full bg-black/60 backdrop-blur-sm flex items-center gap-1">
+                  <span>Open YouTube</span>
                   <ExternalLink className="w-3 h-3" />
                 </span>
               </div>
             </div>
           </a>
 
-          <div className="mt-3">
-            <h3 className="font-serif-cormorant text-2xl font-bold text-white">
-              All I Ever Need
+          <div className="flex-1 text-center sm:text-left">
+            <span className="text-[11px] font-semibold text-rose-400 uppercase tracking-widest block mb-1">
+              {songConfig.artistName} · Official Music
+            </span>
+            <h3 className="font-serif-cormorant text-2xl sm:text-3xl font-bold text-white">
+              {songConfig.songTitle}
             </h3>
-            <p className="text-sm text-rose-300 font-medium mt-0.5">
-              Austin Mahone
+            <p className="text-xs sm:text-sm text-rose-200/80 mt-1 mb-5">
+              Now that you&apos;ve read every word, tap below to listen on YouTube.
             </p>
-            <p className="text-xs text-rose-400/70 mt-1">
-              "Baby you're all I ever need..."
-            </p>
-          </div>
 
-          {/* Direct External Link */}
-          <div className="mt-6 w-full">
-            <a
-              href={YOUTUBE_URL}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="w-full flex items-center justify-center gap-2 py-3 px-4 rounded-xl bg-red-600/20 hover:bg-red-600/30 text-rose-200 hover:text-white border border-red-500/30 text-xs font-semibold transition-all group"
-            >
-              <Youtube className="w-4 h-4 text-red-400 group-hover:text-red-300" />
-              <span>Watch Video on YouTube</span>
-              <ExternalLink className="w-3.5 h-3.5 ml-1" />
-            </a>
-          </div>
-        </div>
-
-        {/* Right Column: Love Dedication Note & Lyrics (7 cols) */}
-        <div className="lg:col-span-7 space-y-6">
-          {/* Dedication Note Card */}
-          <div className="romantic-card rounded-3xl p-6 sm:p-7">
-            <div className="flex items-center gap-2 mb-2 text-rose-400">
-              <Heart className="w-4 h-4 fill-current" />
-              <span className="text-xs font-semibold uppercase tracking-wider">Why This Song Is Dedicated To You</span>
-            </div>
-            <h3 className="font-serif-cormorant text-xl sm:text-2xl font-bold text-white">
-              A Song That Speaks What Words Cannot
-            </h3>
-            <p className="text-xs sm:text-sm text-rose-200/90 mt-2 leading-relaxed font-light">
-              Tsi, whenever Austin Mahone sings <span className="italic text-rose-200">"Baby you're all I ever need, you're amazing, you're my angel..."</span>, every line feels like it was written directly about you. On your birthday, I want you to remember that having you by my side is the greatest blessing I could ever ask for.
-            </p>
-          </div>
-
-          {/* Romantic Lyrics Card */}
-          <div className="romantic-card rounded-3xl p-6 sm:p-7">
-            <div className="flex items-center justify-between mb-4 border-b border-rose-500/15 pb-3">
-              <span className="text-xs font-semibold text-rose-300 uppercase tracking-wider">
-                Lyrics & Meaning
-              </span>
+            <div className="flex flex-wrap items-center justify-center sm:justify-start gap-3">
               <a
-                href={YOUTUBE_URL}
+                href={songConfig.youtubeUrl}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="text-xs text-rose-400 hover:text-rose-200 flex items-center gap-1 transition-colors"
+                className="inline-flex items-center gap-3 px-6 py-3.5 text-sm sm:text-base font-bold text-white bg-gradient-to-r from-red-600 via-rose-600 to-red-700 rounded-2xl hover:from-red-500 hover:to-rose-500 shadow-2xl shadow-red-950/70 hover:scale-105 active:scale-95 transition-all group border border-rose-400/30"
               >
-                <span>Listen with lyrics on YouTube</span>
-                <ExternalLink className="w-3 h-3" />
+                <div className="w-6 h-6 rounded-full bg-white/20 flex items-center justify-center group-hover:bg-white/30 transition-colors">
+                  <Youtube className="w-4 h-4 fill-current text-white" />
+                </div>
+                <span>Open &amp; Listen on YouTube</span>
+                <ExternalLink className="w-4 h-4 opacity-90" />
               </a>
-            </div>
 
-            <div className="space-y-3 font-serif-cormorant text-base sm:text-lg">
-              {songLyrics.map((line, index) => (
-                <p
-                  key={index}
-                  className={`transition-all duration-300 ${
-                    line.type === 'chorus'
-                      ? 'text-rose-200 font-bold italic text-lg sm:text-xl pl-3 border-l-2 border-rose-500'
-                      : 'text-rose-300/80 font-normal'
-                  }`}
-                >
-                  "{line.text}"
-                </p>
-              ))}
-            </div>
-
-            <div className="mt-6 pt-4 border-t border-rose-500/15 flex items-center justify-between text-xs text-rose-400">
-              <span>Austin Mahone · All I Ever Need</span>
-              <a
-                href={YOUTUBE_URL}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="hover:underline flex items-center gap-1 text-amber-300"
+              <button
+                type="button"
+                onClick={triggerCelebration}
+                className="inline-flex items-center gap-2 px-5 py-3.5 text-xs sm:text-sm font-semibold text-rose-200 bg-rose-950/60 border border-rose-500/30 rounded-2xl hover:bg-rose-900/40 hover:text-white transition-colors cursor-pointer"
               >
-                <span>Play Song ↗</span>
-              </a>
+                <Sparkles className="w-4 h-4 text-amber-300" />
+                <span>Celebrate Tsi&apos;s Birthday 🎂</span>
+              </button>
             </div>
           </div>
         </div>
@@ -208,7 +515,7 @@ export const SongPage: React.FC<SongPageProps> = ({
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <button
             onClick={onNavigateToMemories}
-            className="romantic-card rounded-2xl p-5 flex items-center gap-4 text-left group hover:border-rose-400/40 transition-all"
+            className="romantic-card rounded-2xl p-5 flex items-center gap-4 text-left group hover:border-rose-400/40 transition-all cursor-pointer"
           >
             <div className="w-12 h-12 rounded-xl bg-rose-950/70 border border-rose-500/30 flex items-center justify-center text-rose-300 group-hover:scale-105 transition-transform shrink-0">
               <Camera className="w-5 h-5" />
@@ -218,14 +525,14 @@ export const SongPage: React.FC<SongPageProps> = ({
                 Chapter 01
               </span>
               <span className="text-sm sm:text-base font-serif-cormorant font-bold text-white group-hover:text-rose-200 transition-colors">
-                ← View Photos & Videos
+                ← View Photos &amp; Videos
               </span>
             </div>
           </button>
 
           <button
             onClick={onNavigateToLetter}
-            className="romantic-card rounded-2xl p-5 flex items-center gap-4 text-left group hover:border-rose-400/40 transition-all"
+            className="romantic-card rounded-2xl p-5 flex items-center gap-4 text-left group hover:border-rose-400/40 transition-all cursor-pointer"
           >
             <div className="w-12 h-12 rounded-xl bg-rose-950/70 border border-rose-500/30 flex items-center justify-center text-rose-300 group-hover:scale-105 transition-transform shrink-0">
               <Heart className="w-5 h-5 fill-current text-rose-400" />

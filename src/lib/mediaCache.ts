@@ -1,4 +1,4 @@
-import { AccessGateConfig, LoveLetterData, MemoryItem } from '../types';
+import { AccessGateConfig, LoveLetterData, MemoryItem, SongConfig } from '../types';
 
 const DB_NAME = 'tsi_birthday_cache_v1';
 const DB_VERSION = 1;
@@ -181,6 +181,37 @@ export async function saveCachedGateConfig(config: AccessGateConfig): Promise<vo
     await new Promise<void>((resolve) => {
       const tx = db.transaction(META_STORE, 'readwrite');
       tx.objectStore(META_STORE).put(config, 'access_gate');
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => resolve();
+      tx.onabort = () => resolve();
+    });
+  } catch {
+    // Ignore
+  }
+}
+
+export async function getCachedSongConfig(): Promise<SongConfig | null> {
+  try {
+    const db = await openCacheDb();
+    return await new Promise((resolve) => {
+      const tx = db.transaction(META_STORE, 'readonly');
+      const req = tx.objectStore(META_STORE).get('song_config');
+      req.onsuccess = () => {
+        resolve(req.result ? (req.result as SongConfig) : null);
+      };
+      req.onerror = () => resolve(null);
+    });
+  } catch {
+    return null;
+  }
+}
+
+export async function saveCachedSongConfig(song: SongConfig): Promise<void> {
+  try {
+    const db = await openCacheDb();
+    await new Promise<void>((resolve) => {
+      const tx = db.transaction(META_STORE, 'readwrite');
+      tx.objectStore(META_STORE).put(song, 'song_config');
       tx.oncomplete = () => resolve();
       tx.onerror = () => resolve();
       tx.onabort = () => resolve();

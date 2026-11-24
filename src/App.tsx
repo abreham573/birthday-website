@@ -6,17 +6,21 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { onAuthStateChanged, User } from 'firebase/auth';
 import { Lock, AlertTriangle, ExternalLink, KeyRound } from 'lucide-react';
-import { TabType, MemoryItem, LoveLetterData, AccessGateConfig } from './types';
+import { TabType, MemoryItem, LoveLetterData, AccessGateConfig, SongConfig } from './types';
 import { INITIAL_MEMORIES } from './data/initialMemories';
 import { DEFAULT_LOVE_LETTER } from './data/defaultLetter';
 import {
   auth,
+  isFirestoreQuotaLocked,
   isOwnerUser,
+  lockFirestoreForQuota,
   signInOwner,
   signOutOwner,
+  unlockFirestoreForRetry,
 } from './lib/firebase';
 import {
   DEFAULT_GATE_CONFIG,
+  DEFAULT_SONG_CONFIG,
   fetchGateConfigFromFirestore,
   saveGateConfigToFirestore,
   getCachedGateConfigFallback,
@@ -25,6 +29,9 @@ import {
   updateMemoryMetadataInFirestore,
   fetchLetterFromFirestore,
   saveLetterToFirestore,
+  fetchSongConfigFromFirestore,
+  saveSongConfigToFirestore,
+  getCachedSongConfigFallback,
   resolveChunkedMemoryUrl,
   getCachedMemoriesFallback,
   getCachedLetterFallback,
@@ -67,8 +74,9 @@ export default function App() {
   const [memories, setMemories] = useState<MemoryItem[]>(INITIAL_MEMORIES);
   const [isLoadingMemories, setIsLoadingMemories] = useState<boolean>(true);
 
-  // Cloud-synced Love Letter state
+  // Cloud-synced Love Letter & Song state
   const [letterData, setLetterData] = useState<LoveLetterData>(DEFAULT_LOVE_LETTER);
+  const [songConfig, setSongConfig] = useState<SongConfig>(DEFAULT_SONG_CONFIG);
   const [quotaExceeded, setQuotaExceeded] = useState<boolean>(false);
 
   // Modals
@@ -93,18 +101,21 @@ export default function App() {
   }, []);
 
   const readQuotaHitRef = useRef<boolean>(false);
+  const gateSyncPromiseRef = useRef<Promise<void>>(Promise.resolve());
   const hasFreshCloudGateRef = useRef<boolean>(false);
   const hasFreshCloudLetterRef = useRef<boolean>(false);
+  const hasFreshCloudSongRef = useRef<boolean>(false);
 
-  // Warm gate, memories, and letter immediately from IndexedDB cache on mount (0 Firestore reads!)
+  // Warm gate, memories, letter, and song immediately from IndexedDB cache on mount (0 Firestore reads!)
   useEffect(() => {
     let active = true;
 
     async function hydrateLocalCache() {
-      const [cachedGate, cachedMemories, cachedLetter] = await Promise.all([
+      const [cachedGate, cachedMemories, cachedLetter, cachedSong] = await Promise.all([
         getCachedGateConfigFallback().catch(() => null),
         getCachedMemoriesFallback().catch(() => []),
         getCachedLetterFallback().catch(() => null),
+        getCachedSongConfigFallback().catch(() => null),
       ]);
 
       if (!active) return;
@@ -119,6 +130,9 @@ export default function App() {
       }
       if (cachedLetter && !hasFreshCloudLetterRef.current) {
         setLetterData(cachedLetter);
+      }
+      if (cachedSong && !hasFreshCloudSongRef.current) {
+        setSongConfig(cachedSong);
       }
     }
 
@@ -135,12 +149,22 @@ export default function App() {
 
     async function loadGateConfig() {
       try {
+        if (isFirestoreQuotaLocked()) {
+          readQuotaHitRef.current = true;
+          setQuotaExceeded(true);
+          const cached = await getCachedGateConfigFallback();
+          if (active && cached) setGateConfig(cached);
+          return;
+        }
+
         const cloudGate = await fetchGateConfigFromFirestore().catch(async (err) => {
           if (isQuotaExceededError(err)) {
             readQuotaHitRef.current = true;
+            lockFirestoreForQuota();
             setQuotaExceeded(true);
+          } else if (!(err instanceof Error && err.message.trim().startsWith('{'))) {
+            console.error('Failed to load gate config from Firestore:', err);
           }
-          console.error('Failed to load gate config from Firestore:', err);
           return await getCachedGateConfigFallback();
         });
 
@@ -156,7 +180,7 @@ export default function App() {
       }
     }
 
-    loadGateConfig();
+    gateSyncPromiseRef.current = loadGateConfig();
 
     return () => {
       active = false;
@@ -174,14 +198,18 @@ export default function App() {
 
     async function syncMemories() {
       try {
+        await gateSyncPromiseRef.current;
+        if (!active) return;
+
         const cloudMemories = readQuotaHitRef.current
           ? null
           : await fetchMemoriesFromFirestore().catch((err) => {
               if (isQuotaExceededError(err)) {
                 readQuotaHitRef.current = true;
                 setQuotaExceeded(true);
+              } else if (!(err instanceof Error && err.message.trim().startsWith('{'))) {
+                console.error('Failed to load memories from Firestore:', err);
               }
-              console.error('Failed to load memories from Firestore:', err);
               return null;
             });
 
@@ -246,14 +274,18 @@ export default function App() {
     }
 
     async function syncLetter() {
+      await gateSyncPromiseRef.current;
+      if (!active) return;
+
       const cloudLetter = readQuotaHitRef.current
         ? await getCachedLetterFallback()
         : await fetchLetterFromFirestore().catch(async (err) => {
             if (isQuotaExceededError(err)) {
               readQuotaHitRef.current = true;
               setQuotaExceeded(true);
+            } else if (!(err instanceof Error && err.message.trim().startsWith('{'))) {
+              console.error('Failed to load letter from Firestore:', err);
             }
-            console.error('Failed to load letter from Firestore:', err);
             return await getCachedLetterFallback();
           });
 
@@ -264,9 +296,33 @@ export default function App() {
       }
     }
 
+    async function syncSong() {
+      await gateSyncPromiseRef.current;
+      if (!active) return;
+
+      const cloudSong = readQuotaHitRef.current
+        ? await getCachedSongConfigFallback()
+        : await fetchSongConfigFromFirestore().catch(async (err) => {
+            if (isQuotaExceededError(err)) {
+              readQuotaHitRef.current = true;
+              setQuotaExceeded(true);
+            } else if (!(err instanceof Error && err.message.trim().startsWith('{'))) {
+              console.error('Failed to load song config from Firestore:', err);
+            }
+            return await getCachedSongConfigFallback();
+          });
+
+      if (!active) return;
+      if (cloudSong) {
+        hasFreshCloudSongRef.current = true;
+        setSongConfig(cloudSong);
+      }
+    }
+
     hasLoadedCloudRef.current = true;
     void syncMemories();
     void syncLetter();
+    void syncSong();
 
     return () => {
       active = false;
@@ -296,7 +352,9 @@ export default function App() {
 
   const handleResolveMedia = useCallback(async (id: string): Promise<string> => {
     try {
-      const resolvedUrl = await resolveChunkedMemoryUrl(id);
+      const resolvedUrl = await resolveChunkedMemoryUrl(id, {
+        cacheOnly: readQuotaHitRef.current,
+      });
       if (resolvedUrl) {
         setMemories((prev) =>
           prev.map((m) => (m.id === id ? { ...m, url: resolvedUrl } : m))
@@ -333,6 +391,12 @@ export default function App() {
     if (!user || !isOwner) {
       throw new Error('Please sign in with the creator Google account to update the password.');
     }
+    if (isFirestoreQuotaLocked()) {
+      setQuotaExceeded(true);
+      throw new Error(
+        'Daily free database quota limit reached. Free limits reset tomorrow, or you can upgrade in Firebase Console.'
+      );
+    }
     try {
       const updated = await saveGateConfigToFirestore({
         ...params,
@@ -341,7 +405,10 @@ export default function App() {
       });
       setGateConfig(updated);
     } catch (err) {
-      if (isQuotaExceededError(err)) setQuotaExceeded(true);
+      if (isQuotaExceededError(err)) {
+        lockFirestoreForQuota();
+        setQuotaExceeded(true);
+      }
       throw err;
     }
   };
@@ -351,11 +418,43 @@ export default function App() {
     if (!user || !isOwner) {
       throw new Error('Please sign in with the creator Google account to save changes.');
     }
+    if (isFirestoreQuotaLocked()) {
+      setQuotaExceeded(true);
+      throw new Error(
+        'Daily free database quota limit reached. Free limits reset tomorrow, or you can upgrade in Firebase Console.'
+      );
+    }
     try {
       const saved = await saveLetterToFirestore(updated, user.uid);
       setLetterData(saved);
     } catch (err) {
-      if (isQuotaExceededError(err)) setQuotaExceeded(true);
+      if (isQuotaExceededError(err)) {
+        lockFirestoreForQuota();
+        setQuotaExceeded(true);
+      }
+      throw err;
+    }
+  };
+
+  // Save song dedication, lyrics & meaning to Firestore when signed in as owner
+  const handleUpdateSong = async (updated: SongConfig) => {
+    if (!user || !isOwner) {
+      throw new Error('Please sign in with the creator Google account to save changes.');
+    }
+    if (isFirestoreQuotaLocked()) {
+      setQuotaExceeded(true);
+      throw new Error(
+        'Daily free database quota limit reached. Free limits reset tomorrow, or you can upgrade in Firebase Console.'
+      );
+    }
+    try {
+      const saved = await saveSongConfigToFirestore(updated, user.uid);
+      setSongConfig(saved);
+    } catch (err) {
+      if (isQuotaExceededError(err)) {
+        lockFirestoreForQuota();
+        setQuotaExceeded(true);
+      }
       throw err;
     }
   };
@@ -384,6 +483,12 @@ export default function App() {
     if (!isOwner) {
       throw new Error('Please sign in with the creator Google account to edit captions.');
     }
+    if (isFirestoreQuotaLocked()) {
+      setQuotaExceeded(true);
+      throw new Error(
+        'Daily free database quota limit reached. Free limits reset tomorrow, or you can upgrade in Firebase Console.'
+      );
+    }
     try {
       const updated = await updateMemoryMetadataInFirestore({
         memoryId: params.id,
@@ -399,7 +504,10 @@ export default function App() {
         prev && prev.id === params.id ? { ...prev, ...updated } : prev
       );
     } catch (err) {
-      if (isQuotaExceededError(err)) setQuotaExceeded(true);
+      if (isQuotaExceededError(err)) {
+        lockFirestoreForQuota();
+        setQuotaExceeded(true);
+      }
       throw err;
     }
   };
@@ -408,6 +516,12 @@ export default function App() {
   const handleDeleteMemory = async (id: string) => {
     if (!isOwner) {
       throw new Error('Please sign in with the creator Google account to remove memories.');
+    }
+    if (isFirestoreQuotaLocked()) {
+      setQuotaExceeded(true);
+      throw new Error(
+        'Daily free database quota limit reached. Free limits reset tomorrow, or you can upgrade in Firebase Console.'
+      );
     }
     try {
       const target = memories.find((m) => m.id === id);
@@ -418,9 +532,33 @@ export default function App() {
       setMemories((prev) => prev.filter((m) => m.id !== id));
       setSelectedLightboxItem((prev) => (prev?.id === id ? null : prev));
     } catch (err) {
-      if (isQuotaExceededError(err)) setQuotaExceeded(true);
-      console.error('Failed to delete memory from Firestore:', err);
+      if (isQuotaExceededError(err)) {
+        lockFirestoreForQuota();
+        setQuotaExceeded(true);
+      } else if (!(err instanceof Error && err.message.trim().startsWith('{'))) {
+        console.error('Failed to delete memory from Firestore:', err);
+      }
       throw err;
+    }
+  };
+
+  const handleRetryCloudConnection = async () => {
+    try {
+      readQuotaHitRef.current = false;
+      hasLoadedCloudRef.current = false;
+      setQuotaExceeded(false);
+      await unlockFirestoreForRetry();
+      const cloudGate = await fetchGateConfigFromFirestore();
+      if (cloudGate) {
+        hasFreshCloudGateRef.current = true;
+        setGateConfig(cloudGate);
+      }
+    } catch (err) {
+      if (isQuotaExceededError(err)) {
+        readQuotaHitRef.current = true;
+        lockFirestoreForQuota();
+        setQuotaExceeded(true);
+      }
     }
   };
 
@@ -492,15 +630,24 @@ export default function App() {
                     </div>
                   </div>
                   {isOwner && (
-                    <a
-                      href="https://console.firebase.google.com/project/gen-lang-client-0717726151/firestore/databases/ai-studio-birthdaywebsite-b4d31af1-dbb6-455d-ae64-69fcad2dc0d4/data?openUpgradeDialog=true"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 border border-amber-400/40 text-amber-100 font-semibold whitespace-nowrap shrink-0 transition-colors"
-                    >
-                      <span>Upgrade Database</span>
-                      <ExternalLink className="w-3.5 h-3.5" />
-                    </a>
+                    <div className="flex flex-wrap items-center gap-2 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => void handleRetryCloudConnection()}
+                        className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-amber-950/80 hover:bg-amber-900/70 border border-amber-400/30 text-amber-100 font-medium whitespace-nowrap transition-colors cursor-pointer"
+                      >
+                        <span>Retry Sync</span>
+                      </button>
+                      <a
+                        href="https://console.firebase.google.com/project/gen-lang-client-0717726151/firestore/databases/ai-studio-birthdaywebsite-b4d31af1-dbb6-455d-ae64-69fcad2dc0d4/data?openUpgradeDialog=true"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 border border-amber-400/40 text-amber-100 font-semibold whitespace-nowrap transition-colors"
+                      >
+                        <span>Upgrade Database</span>
+                        <ExternalLink className="w-3.5 h-3.5" />
+                      </a>
+                    </div>
                   )}
                 </div>
               </div>
@@ -535,6 +682,10 @@ export default function App() {
 
             {activeTab === 'song' && (
               <SongPage
+                songConfig={songConfig}
+                isOwner={isOwner}
+                onSignInOwner={handleSignInOwner}
+                onUpdateSong={handleUpdateSong}
                 onNavigateToMemories={() => handleSelectTab('memories')}
                 onNavigateToLetter={() => handleSelectTab('letter')}
               />
@@ -542,7 +693,11 @@ export default function App() {
           </main>
 
           {/* Floating Shortcut Button that Redirects to YouTube */}
-          <YouTubeLinkButton />
+          <YouTubeLinkButton
+            songTitle={songConfig.songTitle}
+            artistName={songConfig.artistName}
+            youtubeUrl={songConfig.youtubeUrl}
+          />
 
           {/* Fullscreen Lightbox Modal */}
           <LightboxModal

@@ -379,7 +379,7 @@ export const LightboxModal: React.FC<LightboxModalProps> = ({
               {item.title}
             </h3>
 
-            <p className="text-xs sm:text-sm text-rose-200/90 mt-1.5 leading-relaxed font-light">
+            <p className="text-xs sm:text-sm text-rose-200/90 mt-1.5 leading-relaxed font-light whitespace-pre-line">
               {item.caption}
             </p>
           </div>

@@ -117,6 +117,29 @@ service cloud.firestore {
         && data.updatedAt is timestamp;
     }
 
+    function isValidSong(data) {
+      return data.keys().hasAll([
+          'songTitle', 'artistName', 'youtubeUrl',
+          'dedicationHeading', 'dedicationBody',
+          'lyricsText', 'meaning', 'authorId', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'songTitle', 'artistName', 'youtubeUrl',
+          'dedicationHeading', 'dedicationBody',
+          'lyricsText', 'meaning', 'authorId', 'updatedAt'
+        ])
+        && data.songTitle is string && data.songTitle.size() >= 1 && data.songTitle.size() <= 120
+        && data.artistName is string && data.artistName.size() >= 1 && data.artistName.size() <= 120
+        && data.youtubeUrl is string && data.youtubeUrl.size() >= 1 && data.youtubeUrl.size() <= 500
+        && data.youtubeUrl.matches('^https?://.*$')
+        && data.dedicationHeading is string && data.dedicationHeading.size() >= 1 && data.dedicationHeading.size() <= 160
+        && data.dedicationBody is string && data.dedicationBody.size() >= 1 && data.dedicationBody.size() <= 2000
+        && data.lyricsText is string && data.lyricsText.size() >= 1 && data.lyricsText.size() <= 4000
+        && data.meaning is string && data.meaning.size() <= 2000
+        && isValidId(data.authorId) && data.authorId == request.auth.uid
+        && data.updatedAt is timestamp;
+    }
+
     // Public Birthday Gallery Memories (Readable by Tsi & visitors, writable only by verified owner)
     match /memories/{memoryId} {
       allow get: if isValidId(memoryId);
@@ -202,6 +225,32 @@ service cloud.firestore {
         && incoming().updatedAt == request.time
         && incoming().diff(existing()).affectedKeys().hasOnly([
           'passwordHash', 'hint', 'welcomeTitle', 'welcomeSubtitle', 'updatedAt'
+        ]);
+
+      allow delete: if false;
+    }
+
+    // Dedicated Birthday Song Dedication, Lyrics & Meaning (Publicly readable config, editable only by verified owner)
+    match /song/{songId} {
+      allow get: if isValidId(songId) && songId == 'config';
+      allow list: if false;
+
+      allow create: if isAdmin()
+        && isValidId(songId)
+        && songId == 'config'
+        && isValidSong(incoming())
+        && incoming().updatedAt == request.time;
+
+      allow update: if isAdmin()
+        && isValidId(songId)
+        && songId == 'config'
+        && isValidSong(incoming())
+        && incoming().authorId == existing().authorId
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'songTitle', 'artistName', 'youtubeUrl',
+          'dedicationHeading', 'dedicationBody',
+          'lyricsText', 'meaning', 'updatedAt'
         ]);
 
       allow delete: if false;

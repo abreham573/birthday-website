@@ -20,7 +20,8 @@ import {
   isQuotaExceededError,
   getReadableFirestoreErrorMessage,
 } from '../lib/memoriesService';
-import { OWNER_EMAIL } from '../lib/firebase';
+import { isFirestoreQuotaLocked, OWNER_EMAIL } from '../lib/firebase';
+import { EmojiQuickPicker, insertTextAtCursor } from './EmojiQuickPicker';
 
 interface AddMediaModalProps {
   isOpen: boolean;
@@ -65,6 +66,7 @@ export const AddMediaModal: React.FC<AddMediaModalProps> = ({
   const [error, setError] = useState<string | null>(null);
 
   const selectedItemsRef = useRef<SelectedMediaFile[]>(selectedItems);
+  const captionTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   selectedItemsRef.current = selectedItems;
 
   useEffect(() => {
@@ -159,6 +161,13 @@ export const AddMediaModal: React.FC<AddMediaModalProps> = ({
       setError('Please sign in with the owner Google account first.');
       return;
     }
+    if (isFirestoreQuotaLocked()) {
+      onQuotaExceeded?.();
+      setError(
+        'Daily free database quota limit reached. Free limits reset tomorrow, or you can upgrade in Firebase Console.'
+      );
+      return;
+    }
 
     if (sourceMode === 'upload') {
       if (selectedItems.length === 0) {
@@ -202,7 +211,12 @@ export const AddMediaModal: React.FC<AddMediaModalProps> = ({
         handleReset();
         onClose();
       } catch (uploadErr) {
-        console.error('Cloud upload error:', uploadErr);
+        if (
+          !isQuotaExceededError(uploadErr) &&
+          !(uploadErr instanceof Error && uploadErr.message.trim().startsWith('{'))
+        ) {
+          console.error('Cloud upload error:', uploadErr);
+        }
         if (uploadedCount > 0) {
           commitUploadedItems(uploadedItems);
           setSelectedItems((prev) => {
@@ -629,12 +643,33 @@ export const AddMediaModal: React.FC<AddMediaModalProps> = ({
                 Sweet Note / Caption (Optional)
               </label>
               <textarea
+                ref={captionTextareaRef}
                 rows={2}
-                placeholder="Write a sweet message about this moment..."
+                maxLength={1000}
+                placeholder="Write a sweet message & emojis about this moment..."
                 value={caption}
                 onChange={(e) => setCaption(e.target.value)}
                 disabled={isUploading}
                 className="w-full bg-rose-950/50 border border-rose-500/30 rounded-xl px-3.5 py-2 text-xs text-white placeholder-rose-400/40 focus:outline-none focus:border-rose-400 resize-none"
+              />
+              <EmojiQuickPicker
+                disabled={isUploading}
+                onSelect={(emoji) => {
+                  const { nextValue, nextCursorPos } = insertTextAtCursor(
+                    captionTextareaRef.current,
+                    caption,
+                    emoji,
+                    1000
+                  );
+                  setCaption(nextValue);
+                  requestAnimationFrame(() => {
+                    const el = captionTextareaRef.current;
+                    if (el) {
+                      el.focus();
+                      el.setSelectionRange(nextCursorPos, nextCursorPos);
+                    }
+                  });
+                }}
               />
             </div>
 

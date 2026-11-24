@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import { MemoryItem } from '../types';
 import { getReadableFirestoreErrorMessage } from '../lib/memoriesService';
+import { EmojiQuickPicker, insertTextAtCursor } from './EmojiQuickPicker';
 
 interface MemoriesPageProps {
   memories: MemoryItem[];
@@ -82,6 +83,7 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
 
   const filmstripRef = useRef<HTMLDivElement | null>(null);
   const thumbRefs = useRef<(HTMLButtonElement | null)[]>([]);
+  const editCaptionTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const isDraggingRef = useRef<boolean>(false);
   const swipeGestureRef = useRef<{
     x: number;
@@ -1790,12 +1792,32 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
                         Your Caption
                       </label>
                       <textarea
+                        ref={editCaptionTextareaRef}
                         rows={3}
                         maxLength={1000}
                         value={editCaption}
                         onChange={(e) => setEditCaption(e.target.value)}
-                        placeholder="Write your own words for this photo or video..."
+                        placeholder="Write your own words & emojis for this photo or video..."
                         className="w-full bg-black/45 border border-rose-500/30 rounded-xl px-3 py-2 text-xs sm:text-sm text-white placeholder:text-rose-300/35 focus:outline-none focus:border-rose-400 resize-y"
+                      />
+                      <EmojiQuickPicker
+                        disabled={isSavingCaption}
+                        onSelect={(emoji) => {
+                          const { nextValue, nextCursorPos } = insertTextAtCursor(
+                            editCaptionTextareaRef.current,
+                            editCaption,
+                            emoji,
+                            1000
+                          );
+                          setEditCaption(nextValue);
+                          requestAnimationFrame(() => {
+                            const el = editCaptionTextareaRef.current;
+                            if (el) {
+                              el.focus();
+                              el.setSelectionRange(nextCursorPos, nextCursorPos);
+                            }
+                          });
+                        }}
                       />
                     </div>
 
@@ -1864,7 +1886,7 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
                       {activeItem.title}
                     </h2>
 
-                    <p className="text-xs sm:text-sm text-rose-200/90 mt-1.5 font-light leading-relaxed">
+                    <p className="text-xs sm:text-sm text-rose-200/90 mt-1.5 font-light leading-relaxed whitespace-pre-line">
                       {activeItem.caption || 'A cherished moment of my love, Tsi.'}
                     </p>
                   </div>

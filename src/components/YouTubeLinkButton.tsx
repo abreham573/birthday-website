@@ -2,26 +2,34 @@ import React from 'react';
 import { Youtube, ExternalLink, Music2 } from 'lucide-react';
 import austinCover from '../assets/images/austin_mahone_cover_1794420838531.jpg';
 
-export const YouTubeLinkButton: React.FC = () => {
-  const YOUTUBE_URL = 'https://www.youtube.com/watch?v=ZAC_k1HUyE4';
+interface YouTubeLinkButtonProps {
+  songTitle?: string;
+  artistName?: string;
+  youtubeUrl?: string;
+}
 
+export const YouTubeLinkButton: React.FC<YouTubeLinkButtonProps> = ({
+  songTitle = 'All I Ever Need',
+  artistName = 'Austin Mahone',
+  youtubeUrl = 'https://www.youtube.com/watch?v=ZAC_k1HUyE4',
+}) => {
   return (
     <aside
-      aria-label="Direct Link to Austin Mahone on YouTube"
+      aria-label={`Direct Link to ${artistName} on YouTube`}
       className="fixed bottom-20 md:bottom-6 right-4 z-40 max-w-[calc(100vw-2rem)]"
     >
       <a
-        href={YOUTUBE_URL}
+        href={youtubeUrl}
         target="_blank"
         rel="noopener noreferrer"
         className="romantic-card rounded-2xl p-2.5 sm:px-4 sm:py-3 flex items-center gap-3 shadow-2xl border border-rose-500/30 bg-[#1f0309]/95 backdrop-blur-lg hover:border-rose-400/60 hover:bg-[#28040d] transition-all group active:scale-95 text-white"
-        title="Open Austin Mahone - All I Ever Need on YouTube"
+        title={`Open ${artistName} - ${songTitle} on YouTube`}
       >
         {/* Album Artwork Thumbnail */}
         <div className="relative w-10 h-10 sm:w-11 sm:h-11 rounded-full overflow-hidden shrink-0 border border-rose-400/30 group-hover:scale-105 transition-transform">
           <img
             src={austinCover}
-            alt="Austin Mahone - All I Ever Need Cover"
+            alt={`${artistName} - ${songTitle} Cover`}
             className="w-full h-full object-cover"
           />
           {/* Subtle YouTube badge overlay */}
@@ -37,10 +45,10 @@ export const YouTubeLinkButton: React.FC = () => {
             <span>Her Birthday Song</span>
           </div>
           <p className="text-xs sm:text-sm font-bold text-white group-hover:text-rose-200 transition-colors truncate">
-            All I Ever Need
+            {songTitle}
           </p>
           <p className="text-[11px] text-rose-300/70 truncate flex items-center gap-1">
-            <span>Austin Mahone · Play on YouTube</span>
+            <span>{artistName} · Play on YouTube</span>
             <ExternalLink className="w-3 h-3 text-rose-400 inline" />
           </p>
         </div>

@@ -32,3 +32,13 @@ export interface AccessGateConfig {
   welcomeTitle: string;
   welcomeSubtitle: string;
 }
+
+export interface SongConfig {
+  songTitle: string;
+  artistName: string;
+  youtubeUrl: string;
+  dedicationHeading: string;
+  dedicationBody: string;
+  lyricsText: string;
+  meaning: string;
+}

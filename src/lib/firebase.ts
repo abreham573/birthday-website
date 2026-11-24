@@ -10,6 +10,8 @@ import {
   getFirestore,
   doc,
   getDocFromServer,
+  disableNetwork,
+  enableNetwork,
 } from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
 
@@ -19,6 +21,24 @@ export const auth = getAuth(app);
 export const googleProvider = new GoogleAuthProvider();
 
 export const OWNER_EMAIL = 'abrehamreigns@gmail.com';
+
+let firestoreQuotaLocked = false;
+
+export function isFirestoreQuotaLocked(): boolean {
+  return firestoreQuotaLocked;
+}
+
+export function lockFirestoreForQuota(): void {
+  if (firestoreQuotaLocked) return;
+  firestoreQuotaLocked = true;
+  // Stop Firestore SDK background stream retries ("Using maximum backoff delay")
+  void disableNetwork(db).catch(() => {});
+}
+
+export async function unlockFirestoreForRetry(): Promise<void> {
+  firestoreQuotaLocked = false;
+  await enableNetwork(db);
+}
 
 export function isOwnerUser(user: User | null): boolean {
   if (!user) return false;
@@ -69,8 +89,18 @@ export function handleFirestoreError(
   operationType: OperationType,
   path: string | null
 ): never {
+  const rawMessage = error instanceof Error ? error.message : String(error);
+  const lower = rawMessage.toLowerCase();
+  if (
+    lower.includes('quota exceeded') ||
+    lower.includes('quota limit exceeded') ||
+    lower.includes('resource-exhausted')
+  ) {
+    lockFirestoreForQuota();
+  }
+
   const errInfo: FirestoreErrorInfo = {
-    error: error instanceof Error ? error.message : String(error),
+    error: rawMessage,
     authInfo: {
       userId: auth.currentUser?.uid,
       email: auth.currentUser?.email,
@@ -94,11 +124,17 @@ async function testConnection() {
   try {
     await getDocFromServer(doc(db, 'test', 'connection'));
   } catch (error) {
-    if (
-      error instanceof Error &&
-      error.message.includes('the client is offline')
-    ) {
-      console.error('Please check your Firebase configuration.');
+    if (error instanceof Error) {
+      const lower = error.message.toLowerCase();
+      if (
+        lower.includes('quota exceeded') ||
+        lower.includes('quota limit exceeded') ||
+        lower.includes('resource-exhausted')
+      ) {
+        lockFirestoreForQuota();
+      } else if (error.message.includes('the client is offline')) {
+        console.error('Please check your Firebase configuration.');
+      }
     }
   }
 }
