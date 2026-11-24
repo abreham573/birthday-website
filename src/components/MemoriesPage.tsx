@@ -89,19 +89,36 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
     moved: boolean;
   } | null>(null);
   const flipCounterRef = useRef<number>(0);
+  const flipSheetIdRef = useRef<number | null>(null);
+  const dragResetTimerRef = useRef<number | null>(null);
   const dragTilt = useMotionValue(0);
   const showAddButton = isOwner || (!isLoading && memories.length === 0);
 
   const filteredMemories = memories;
 
+  useEffect(() => {
+    flipSheetIdRef.current = flipSheet?.id ?? null;
+  }, [flipSheet]);
+
+  useEffect(() => {
+    return () => {
+      if (dragResetTimerRef.current !== null) {
+        window.clearTimeout(dragResetTimerRef.current);
+      }
+    };
+  }, []);
+
   // Reset or clamp slide index when list changes
   useEffect(() => {
+    flipSheetIdRef.current = null;
     setFlipSheet(null);
     dragTilt.set(0);
-    setCurrentIndex((prev) => {
-      if (filteredMemories.length === 0) return 0;
-      return prev >= filteredMemories.length ? 0 : prev;
-    });
+    if (filteredMemories.length === 0) {
+      setAlbumState('frontCover');
+      setCurrentIndex(0);
+    } else {
+      setCurrentIndex((prev) => (prev >= filteredMemories.length ? 0 : prev));
+    }
     setVideoError(null);
   }, [filteredMemories.length, dragTilt]);
 
@@ -115,6 +132,38 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
     setIsEditingCaption(false);
     setCaptionSaveError(null);
   }, [activeItem?.id, albumState]);
+
+  // If user flips to an uncached chunked photo before background fetch reaches it, resolve it immediately
+  useEffect(() => {
+    if (
+      albumState === 'pages' &&
+      activeItem &&
+      activeItem.type === 'photo' &&
+      activeItem.isChunked &&
+      !activeItem.url &&
+      onResolveMedia
+    ) {
+      void onResolveMedia(activeItem.id).catch(() => {});
+    }
+  }, [albumState, activeItem, onResolveMedia]);
+
+  // Preload upcoming page images so turning pages renders instantaneously
+  useEffect(() => {
+    if (filteredMemories.length === 0) return;
+    const indicesToPreload =
+      albumState === 'frontCover'
+        ? [0, 1]
+        : [currentIndex + 1, currentIndex + 2, currentIndex - 1];
+
+    indicesToPreload.forEach((idx) => {
+      const candidate = filteredMemories[idx];
+      if (candidate?.type === 'photo' && candidate.url) {
+        const img = new Image();
+        img.decoding = 'async';
+        img.src = candidate.url;
+      }
+    });
+  }, [albumState, currentIndex, filteredMemories]);
 
   /**
    * Commit any in-progress page flip immediately if a new flip is triggered rapidly,
@@ -456,6 +505,10 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
   }, [currentIndex, albumState]);
 
   const beginSwipe = useCallback((x: number, y: number) => {
+    if (dragResetTimerRef.current !== null) {
+      window.clearTimeout(dragResetTimerRef.current);
+      dragResetTimerRef.current = null;
+    }
     swipeGestureRef.current = {
       x,
       y,
@@ -504,8 +557,12 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
 
       if (g.moved || Math.abs(dx) > 10) {
         isDraggingRef.current = true;
-        window.setTimeout(() => {
+        if (dragResetTimerRef.current !== null) {
+          window.clearTimeout(dragResetTimerRef.current);
+        }
+        dragResetTimerRef.current = window.setTimeout(() => {
           isDraggingRef.current = false;
+          dragResetTimerRef.current = null;
         }, 120);
       }
 
@@ -527,8 +584,12 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
   const cancelSwipe = useCallback(() => {
     swipeGestureRef.current = null;
     animate(dragTilt, 0, { duration: 0.2 });
-    window.setTimeout(() => {
+    if (dragResetTimerRef.current !== null) {
+      window.clearTimeout(dragResetTimerRef.current);
+    }
+    dragResetTimerRef.current = window.setTimeout(() => {
       isDraggingRef.current = false;
+      dragResetTimerRef.current = null;
     }, 80);
   }, [dragTilt]);
 
@@ -636,13 +697,7 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
             <Heart className="w-4 h-4 fill-current ml-1" />
           </button>
         </div>
-      ) : filteredMemories.length === 0 || !activeItem ? (
-        <div className="romantic-card rounded-3xl p-8 text-center max-w-xl mx-auto my-8">
-          <p className="text-sm text-rose-200/80">
-            No items match this filter yet. Try switching back to All Moments.
-          </p>
-        </div>
-      ) : (
+      ) : !activeItem ? null : (
         /* Real Keepsake Photo Album with Front Cover + 3D Page Flip + End Closing Animation */
         <section aria-label="Tsi's Photo Album" className="max-w-4xl mx-auto space-y-5">
           {/* Top Album Controls */}
@@ -787,6 +842,9 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
                       endSwipe(e.clientX, e.clientY, handleOpenAlbum, () => {});
                     }}
                     onPointerCancel={cancelSwipe}
+                    onPointerLeave={(e) => {
+                      if (e.pointerType !== 'touch' && swipeGestureRef.current) cancelSwipe();
+                    }}
                     onClick={() => {
                       if (isDraggingRef.current) return;
                       handleOpenAlbum();
@@ -839,6 +897,7 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
                             src={filteredMemories[0].url}
                             alt={filteredMemories[0].title}
                             referrerPolicy="no-referrer"
+                            decoding="async"
                             draggable={false}
                             className="w-20 h-20 sm:w-32 sm:h-32 object-cover rounded-lg"
                           />
@@ -924,6 +983,9 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
                       endSwipe(e.clientX, e.clientY, () => {}, handleReopenLastPageFromEnd);
                     }}
                     onPointerCancel={cancelSwipe}
+                    onPointerLeave={(e) => {
+                      if (e.pointerType !== 'touch' && swipeGestureRef.current) cancelSwipe();
+                    }}
                     className="absolute inset-0 z-10 rounded-xl shadow-[0_24px_55px_rgba(0,0,0,0.85)] flex flex-col justify-between p-4 sm:p-10 pl-9 sm:pl-14 select-none touch-pan-y border border-amber-200/30"
                   >
                     {/* Ribbed Leather Spine Hinge on Left */}
@@ -1090,6 +1152,9 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
                       );
                     }}
                     onPointerCancel={cancelSwipe}
+                    onPointerLeave={(e) => {
+                      if (e.pointerType !== 'touch' && swipeGestureRef.current) cancelSwipe();
+                    }}
                     onClick={() => {
                       if (isDraggingRef.current) return;
                       if (activeItem.type === 'photo') {
@@ -1160,9 +1225,15 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
                               src={activeItem.url}
                               alt={activeItem.title}
                               referrerPolicy="no-referrer"
+                              decoding="async"
                               draggable={false}
                               className="max-h-full max-w-full w-auto h-auto object-contain rounded-sm select-none"
                             />
+                          ) : activeItem.isChunked ? (
+                            <div className="flex flex-col items-center justify-center text-rose-900/70 gap-2">
+                              <Loader2 className="w-8 h-8 animate-spin text-rose-600" />
+                              <span className="text-xs font-medium">Loading photo...</span>
+                            </div>
                           ) : (
                             <div className="flex flex-col items-center justify-center text-rose-900/60">
                               <Camera className="w-10 h-10 mb-2" />
@@ -1286,12 +1357,11 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
                         ease: PAGE_FLIP_EASE,
                       }}
                       onAnimationComplete={() => {
-                        setFlipSheet((current) => {
-                          if (!current || current.id !== flipSheet.id) return current;
-                          setAlbumState(current.commitState);
-                          setCurrentIndex(current.commitIndex);
-                          return null;
-                        });
+                        if (flipSheetIdRef.current !== flipSheet.id) return;
+                        flipSheetIdRef.current = null;
+                        setAlbumState(flipSheet.commitState);
+                        setCurrentIndex(flipSheet.commitIndex);
+                        setFlipSheet(null);
                       }}
                       style={{
                         transformOrigin: '0% 50%',
@@ -1514,28 +1584,44 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
               {/* Album Page Dots + Swipe / Page-Curl Direction Hint */}
               <div className="flex flex-col items-center gap-2 pt-0.5">
                 {filteredMemories.length > 1 && (
-                  <div className="flex items-center justify-center gap-1.5" role="tablist" aria-label="Album pages">
-                    {filteredMemories.map((item, idx) => {
-                      const isActive = idx === currentIndex;
-                      return (
-                        <button
-                          key={`dot-${item.id}`}
-                          type="button"
-                          role="tab"
-                          aria-selected={isActive}
-                          aria-label={`Page ${idx + 1}`}
-                          onClick={() => {
-                            setIsAutoPlaying(false);
-                            goToSlide(idx);
-                          }}
-                          className={`h-2 rounded-full transition-all cursor-pointer ${
-                            isActive
-                              ? 'w-7 bg-gradient-to-r from-rose-500 to-amber-300'
-                              : 'w-2 bg-rose-400/35 hover:bg-rose-400/70'
-                          }`}
-                        />
-                      );
-                    })}
+                  <div
+                    className="flex flex-wrap items-center justify-center gap-1.5 max-w-full px-2"
+                    role="tablist"
+                    aria-label="Album pages"
+                  >
+                    {(() => {
+                      const total = filteredMemories.length;
+                      const maxDots = 15;
+                      let start = 0;
+                      let end = total;
+                      if (total > maxDots) {
+                        const half = Math.floor(maxDots / 2);
+                        start = Math.max(0, Math.min(total - maxDots, currentIndex - half));
+                        end = start + maxDots;
+                      }
+                      return filteredMemories.slice(start, end).map((item, offset) => {
+                        const idx = start + offset;
+                        const isActive = idx === currentIndex;
+                        return (
+                          <button
+                            key={`dot-${item.id}`}
+                            type="button"
+                            role="tab"
+                            aria-selected={isActive}
+                            aria-label={`Page ${idx + 1}`}
+                            onClick={() => {
+                              setIsAutoPlaying(false);
+                              goToSlide(idx);
+                            }}
+                            className={`h-2 rounded-full transition-all cursor-pointer ${
+                              isActive
+                                ? 'w-7 bg-gradient-to-r from-rose-500 to-amber-300'
+                                : 'w-2 bg-rose-400/35 hover:bg-rose-400/70'
+                            }`}
+                          />
+                        );
+                      });
+                    })()}
                   </div>
                 )}
 
@@ -1557,69 +1643,75 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
               {/* Compact Filmstrip Thumbnail Bar */}
               <div
                 ref={filmstripRef}
-                className="relative flex items-center justify-start sm:justify-center gap-2.5 overflow-x-auto py-2 px-1"
+                className="relative overflow-x-auto py-2 px-1"
               >
-                {filteredMemories.map((item, idx) => {
-                  const isActive = idx === currentIndex;
-                  return (
+                <div className="flex items-center justify-center gap-2.5 w-max min-w-full">
+                  {filteredMemories.map((item, idx) => {
+                    const isActive = idx === currentIndex;
+                    return (
+                      <button
+                        key={item.id}
+                        ref={(el) => {
+                          thumbRefs.current[idx] = el;
+                        }}
+                        type="button"
+                        onClick={() => {
+                          setIsAutoPlaying(false);
+                          goToSlide(idx);
+                        }}
+                        aria-label={`Go to page ${idx + 1}: ${item.title}`}
+                        className={`relative shrink-0 w-14 h-14 sm:w-16 sm:h-16 rounded-xl overflow-hidden border transition-all cursor-pointer ${
+                          isActive
+                            ? 'border-rose-300 ring-2 ring-rose-500/80 scale-105 shadow-lg'
+                            : 'border-rose-500/20 opacity-60 hover:opacity-100'
+                        }`}
+                      >
+                        {item.type === 'photo' && item.url ? (
+                          <img
+                            src={item.url}
+                            alt={item.title}
+                            referrerPolicy="no-referrer"
+                            loading="lazy"
+                            decoding="async"
+                            className="w-full h-full object-cover"
+                          />
+                        ) : item.thumbnailUrl ? (
+                          <img
+                            src={item.thumbnailUrl}
+                            alt={item.title}
+                            referrerPolicy="no-referrer"
+                            loading="lazy"
+                            decoding="async"
+                            className="w-full h-full object-cover"
+                          />
+                        ) : (
+                          <div className="w-full h-full bg-gradient-to-br from-rose-900/80 to-[#190207] flex items-center justify-center text-rose-200">
+                            <Film className="w-4 h-4" />
+                          </div>
+                        )}
+
+                        {item.type === 'video' && (
+                          <span className="absolute bottom-1 right-1 w-4 h-4 rounded-full bg-black/75 text-white flex items-center justify-center">
+                            <Play className="w-2 h-2 fill-current ml-0.5" />
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
+
+                  {isOwner && (
                     <button
-                      key={item.id}
-                      ref={(el) => {
-                        thumbRefs.current[idx] = el;
-                      }}
                       type="button"
-                      onClick={() => {
-                        setIsAutoPlaying(false);
-                        goToSlide(idx);
-                      }}
-                      aria-label={`Go to page ${idx + 1}: ${item.title}`}
-                      className={`relative shrink-0 w-14 h-14 sm:w-16 sm:h-16 rounded-xl overflow-hidden border transition-all cursor-pointer ${
-                        isActive
-                          ? 'border-rose-300 ring-2 ring-rose-500/80 scale-105 shadow-lg'
-                          : 'border-rose-500/20 opacity-60 hover:opacity-100'
-                      }`}
+                      onClick={onOpenAddModal}
+                      aria-label="Add more photos or videos"
+                      title="Add more photos or videos"
+                      className="shrink-0 w-14 h-14 sm:w-16 sm:h-16 rounded-xl border-2 border-dashed border-rose-500/35 hover:border-rose-400 bg-rose-950/30 hover:bg-rose-950/60 text-rose-300 hover:text-white flex flex-col items-center justify-center gap-0.5 transition-colors cursor-pointer"
                     >
-                      {item.type === 'photo' && item.url ? (
-                        <img
-                          src={item.url}
-                          alt={item.title}
-                          referrerPolicy="no-referrer"
-                          className="w-full h-full object-cover"
-                        />
-                      ) : item.thumbnailUrl ? (
-                        <img
-                          src={item.thumbnailUrl}
-                          alt={item.title}
-                          referrerPolicy="no-referrer"
-                          className="w-full h-full object-cover"
-                        />
-                      ) : (
-                        <div className="w-full h-full bg-gradient-to-br from-rose-900/80 to-[#190207] flex items-center justify-center text-rose-200">
-                          <Film className="w-4 h-4" />
-                        </div>
-                      )}
-
-                      {item.type === 'video' && (
-                        <span className="absolute bottom-1 right-1 w-4 h-4 rounded-full bg-black/75 text-white flex items-center justify-center">
-                          <Play className="w-2 h-2 fill-current ml-0.5" />
-                        </span>
-                      )}
+                      <Plus className="w-4 h-4" />
+                      <span className="text-[9px] font-medium">Add</span>
                     </button>
-                  );
-                })}
-
-                {isOwner && (
-                  <button
-                    type="button"
-                    onClick={onOpenAddModal}
-                    aria-label="Add more photos or videos"
-                    title="Add more photos or videos"
-                    className="shrink-0 w-14 h-14 sm:w-16 sm:h-16 rounded-xl border-2 border-dashed border-rose-500/35 hover:border-rose-400 bg-rose-950/30 hover:bg-rose-950/60 text-rose-300 hover:text-white flex flex-col items-center justify-center gap-0.5 transition-colors cursor-pointer"
-                  >
-                    <Plus className="w-4 h-4" />
-                    <span className="text-[9px] font-medium">Add</span>
-                  </button>
-                )}
+                  )}
+                </div>
               </div>
 
               {/* Full Active Photo Caption Card at the Bottom */}
@@ -1768,34 +1860,6 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
           )}
         </section>
       )}
-
-      {/* Romantic Page Redirection Strip to Love Letter */}
-      <section className="mt-12 pt-8 border-t border-rose-500/20">
-        <div className="romantic-card rounded-3xl p-6 sm:p-8 flex flex-col sm:flex-row items-center justify-between gap-6 bg-gradient-to-r from-[#2e030c]/90 via-[#3d0512]/90 to-[#2e030c]/90">
-          <div className="text-center sm:text-left">
-            <span className="text-[11px] font-semibold text-rose-400 uppercase tracking-widest block mb-1">
-              Next Step In The Birthday Surprise
-            </span>
-            <h3 className="font-serif-cormorant text-2xl sm:text-3xl font-bold text-white">
-              Read The Special Love Letter For Tsi
-            </h3>
-            <p className="text-xs sm:text-sm text-rose-200/80 mt-1 max-w-xl font-light">
-              A handwritten letter for Tsi, with a sweet hidden heart animation waiting when she taps it.
-            </p>
-          </div>
-
-          <div className="flex flex-col sm:flex-row items-center gap-3 w-full sm:w-auto">
-            <button
-              type="button"
-              onClick={onNavigateToLetter}
-              className="w-full sm:w-auto flex items-center justify-center gap-2 px-6 py-3.5 text-sm font-semibold text-white bg-gradient-to-r from-rose-600 to-red-600 rounded-xl hover:from-rose-500 hover:to-red-500 shadow-xl shadow-rose-950/50 active:scale-95 transition-all whitespace-nowrap cursor-pointer"
-            >
-              <span>Open Love Letter</span>
-              <ArrowRight className="w-4 h-4" />
-            </button>
-          </div>
-        </div>
-      </section>
     </div>
   );
 };

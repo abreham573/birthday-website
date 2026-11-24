@@ -1,13 +1,18 @@
 import {
   collection,
   doc,
+  DocumentData,
   getDoc,
   getDocs,
-  orderBy,
-  query,
   limit,
+  orderBy,
+  Query,
+  query,
+  QueryDocumentSnapshot,
+  QuerySnapshot,
   serverTimestamp,
   setDoc,
+  startAfter,
   updateDoc,
   writeBatch,
 } from 'firebase/firestore';
@@ -28,6 +33,7 @@ import { DEFAULT_LOVE_LETTER } from '../data/defaultLetter';
 
 const CHUNK_SIZE = 650000;
 const MAX_CHUNKS = 40;
+const CHUNKS_PER_BATCH = 8; // <= ~5.2 MB per batch to stay well under Firestore's 10 MB request limit
 const MAX_VIDEO_BYTES = 18 * 1024 * 1024; // ~18MB max video (~24MB base64 <= 40 chunks)
 
 export function isQuotaExceededError(err: unknown): boolean {
@@ -42,6 +48,33 @@ export function isQuotaExceededError(err: unknown): boolean {
 
 function sanitizeId(raw: string): string {
   return raw.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 100);
+}
+
+const resolvedObjectUrlMap = new Map<string, string>();
+
+function getOrCreateObjectUrl(memoryId: string, blob: Blob): string {
+  const existing = resolvedObjectUrlMap.get(memoryId);
+  if (existing) return existing;
+  const created = URL.createObjectURL(blob);
+  resolvedObjectUrlMap.set(memoryId, created);
+  return created;
+}
+
+function revokeCachedObjectUrl(memoryId: string): void {
+  const existing = resolvedObjectUrlMap.get(memoryId);
+  if (existing) {
+    URL.revokeObjectURL(existing);
+    resolvedObjectUrlMap.delete(memoryId);
+  }
+}
+
+async function prependMemoryToCache(item: MemoryItem): Promise<void> {
+  const cached = await getCachedMemoriesList();
+  if (cached) {
+    await saveCachedMemoriesList([item, ...cached.filter((m) => m.id !== item.id)]);
+  } else {
+    await saveCachedMemoriesList([item]);
+  }
 }
 
 function readFileAsDataUrl(file: File): Promise<string> {
@@ -72,7 +105,7 @@ async function compressImageFile(file: File): Promise<{ dataUrl: string; mimeTyp
     img.onload = async () => {
       URL.revokeObjectURL(objectUrl);
       try {
-        const maxDim = 1440;
+        const maxDim = 1200;
         let { width, height } = img;
         if (width > maxDim || height > maxDim) {
           if (width > height) {
@@ -96,18 +129,18 @@ async function compressImageFile(file: File): Promise<{ dataUrl: string; mimeTyp
 
         ctx.drawImage(img, 0, 0, width, height);
 
-        let quality = 0.84;
+        let quality = 0.78;
         let output = canvas.toDataURL('image/jpeg', quality);
-        if (output.length > 650000) {
-          quality = 0.7;
+        if (output.length > 420000) {
+          quality = 0.66;
           output = canvas.toDataURL('image/jpeg', quality);
         }
-        if (output.length > 850000) {
+        if (output.length > 650000) {
           const scale = 0.75;
           canvas.width = Math.round(width * scale);
           canvas.height = Math.round(height * scale);
           ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-          output = canvas.toDataURL('image/jpeg', 0.72);
+          output = canvas.toDataURL('image/jpeg', 0.68);
         }
 
         resolve({ dataUrl: output, mimeType: 'image/jpeg' });
@@ -213,8 +246,7 @@ export async function uploadMemoryFileToFirestore(params: {
       handleFirestoreError(error, OperationType.CREATE, `memories/${memoryId}`);
     }
 
-    onProgress?.(100);
-    return {
+    const newItem: MemoryItem = {
       id: memoryId,
       type: mediaType,
       url: dataUrl,
@@ -226,6 +258,10 @@ export async function uploadMemoryFileToFirestore(params: {
       isCustom: true,
       isChunked: false,
     };
+    await prependMemoryToCache(newItem);
+
+    onProgress?.(100);
+    return newItem;
   }
 
   // Split into chunks for larger files (e.g. video clips)
@@ -241,8 +277,10 @@ export async function uploadMemoryFileToFirestore(params: {
   }
 
   try {
-    const batch = writeBatch(db);
-    batch.set(memoryRef, {
+    // Commit parent doc + first slice of chunks, then subsequent slices of CHUNKS_PER_BATCH
+    // so every request stays well below Firestore's 10 MB batch payload limit.
+    const firstBatch = writeBatch(db);
+    firstBatch.set(memoryRef, {
       type: mediaType,
       url: '',
       mimeType: mimeType.slice(0, 100),
@@ -258,17 +296,32 @@ export async function uploadMemoryFileToFirestore(params: {
       updatedAt: serverTimestamp(),
     });
 
-    chunks.forEach((chunkData, index) => {
+    const firstSliceEnd = Math.min(chunks.length, CHUNKS_PER_BATCH);
+    for (let index = 0; index < firstSliceEnd; index++) {
       const chunkRef = doc(db, 'memories', memoryId, 'chunks', `chunk_${index}`);
-      batch.set(chunkRef, {
+      firstBatch.set(chunkRef, {
         index,
-        data: chunkData,
+        data: chunks[index],
         authorId,
         createdAt: serverTimestamp(),
       });
-    });
+    }
+    await firstBatch.commit();
 
-    await batch.commit();
+    for (let start = firstSliceEnd; start < chunks.length; start += CHUNKS_PER_BATCH) {
+      const nextBatch = writeBatch(db);
+      const end = Math.min(chunks.length, start + CHUNKS_PER_BATCH);
+      for (let index = start; index < end; index++) {
+        const chunkRef = doc(db, 'memories', memoryId, 'chunks', `chunk_${index}`);
+        nextBatch.set(chunkRef, {
+          index,
+          data: chunks[index],
+          authorId,
+          createdAt: serverTimestamp(),
+        });
+      }
+      await nextBatch.commit();
+    }
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, `memories/${memoryId}`);
   }
@@ -281,8 +334,8 @@ export async function uploadMemoryFileToFirestore(params: {
 
   onProgress?.(100);
 
-  const playableUrl = blob ? URL.createObjectURL(blob) : dataUrl;
-  return {
+  const playableUrl = blob ? getOrCreateObjectUrl(memoryId, blob) : dataUrl;
+  const newItem: MemoryItem = {
     id: memoryId,
     type: mediaType,
     url: playableUrl,
@@ -294,6 +347,8 @@ export async function uploadMemoryFileToFirestore(params: {
     isCustom: true,
     isChunked: true,
   };
+  await prependMemoryToCache(newItem);
+  return newItem;
 }
 
 export async function saveMemoryUrlToFirestore(params: {
@@ -316,6 +371,11 @@ export async function saveMemoryUrlToFirestore(params: {
   const safeDate = date.trim().slice(0, 80) || 'Special Moment';
   const safeTag = tag.trim().slice(0, 60) || 'Birthday Special';
   const safeUrl = url.trim().slice(0, 900000);
+  if (
+    !/^(https?:\/\/|\/|data:(image|video)\/)/i.test(safeUrl)
+  ) {
+    throw new Error('Please enter a valid http:// or https:// media link.');
+  }
 
   try {
     await setDoc(doc(db, 'memories', memoryId), {
@@ -337,7 +397,7 @@ export async function saveMemoryUrlToFirestore(params: {
     handleFirestoreError(error, OperationType.CREATE, `memories/${memoryId}`);
   }
 
-  return {
+  const newItem: MemoryItem = {
     id: memoryId,
     type: mediaType,
     url: safeUrl,
@@ -349,70 +409,109 @@ export async function saveMemoryUrlToFirestore(params: {
     isCustom: true,
     isChunked: false,
   };
+  await prependMemoryToCache(newItem);
+  return newItem;
 }
 
+const inFlightChunkResolutions = new Map<string, Promise<string>>();
+
 export async function resolveChunkedMemoryUrl(memoryId: string): Promise<string> {
-  // 1. Check local IndexedDB cache first (0 Firestore reads!)
-  const cachedBlob = await getCachedMediaBlob(memoryId);
-  if (cachedBlob) {
-    return URL.createObjectURL(cachedBlob);
-  }
+  const existingUrl = resolvedObjectUrlMap.get(memoryId);
+  if (existingUrl) return existingUrl;
 
-  // 2. Fetch immutable chunks from Firestore once and cache locally
-  const chunksPath = `memories/${memoryId}/chunks`;
-  try {
-    const chunksQuery = query(
-      collection(db, 'memories', memoryId, 'chunks'),
-      orderBy('index', 'asc')
-    );
-    const chunksSnap = await getDocs(chunksQuery);
-    const fullDataUrl = chunksSnap.docs
-      .map((c) => c.data().data as string)
-      .join('');
-    if (!fullDataUrl) return '';
+  const existing = inFlightChunkResolutions.get(memoryId);
+  if (existing) return existing;
 
-    const blob = dataUrlToBlob(fullDataUrl);
-    if (blob) {
-      await saveCachedMediaBlob(memoryId, blob);
-      return URL.createObjectURL(blob);
+  const task = (async () => {
+    // 1. Check local IndexedDB cache first (0 Firestore reads!)
+    const cachedBlob = await getCachedMediaBlob(memoryId);
+    if (cachedBlob) {
+      return getOrCreateObjectUrl(memoryId, cachedBlob);
     }
-    return fullDataUrl;
-  } catch (chunkErr) {
-    handleFirestoreError(chunkErr, OperationType.LIST, chunksPath);
-  }
+
+    // 2. Fetch immutable chunks from Firestore once and cache locally
+    const chunksPath = `memories/${memoryId}/chunks`;
+    try {
+      const chunksQuery = query(
+        collection(db, 'memories', memoryId, 'chunks'),
+        orderBy('index', 'asc')
+      );
+      const chunksSnap = await getDocs(chunksQuery);
+      const fullDataUrl = chunksSnap.docs
+        .map((c) => c.data().data as string)
+        .join('');
+      if (!fullDataUrl) return '';
+
+      const blob = dataUrlToBlob(fullDataUrl);
+      if (blob) {
+        void saveCachedMediaBlob(memoryId, blob);
+        return getOrCreateObjectUrl(memoryId, blob);
+      }
+      return fullDataUrl;
+    } catch (chunkErr) {
+      handleFirestoreError(chunkErr, OperationType.LIST, chunksPath);
+    }
+  })().finally(() => {
+    inFlightChunkResolutions.delete(memoryId);
+  });
+
+  inFlightChunkResolutions.set(memoryId, task);
+  return task;
 }
 
 export async function fetchMemoriesFromFirestore(): Promise<MemoryItem[]> {
   const path = 'memories';
+  const PAGE_SIZE = 100;
   try {
-    const q = query(
-      collection(db, path),
-      orderBy('createdAt', 'desc'),
-      limit(100)
-    );
-    const snapshot = await getDocs(q);
+    const allDocs: QueryDocumentSnapshot<DocumentData>[] = [];
+    let lastDoc: QueryDocumentSnapshot<DocumentData> | null = null;
 
-    const items: MemoryItem[] = [];
+    while (true) {
+      const q: Query<DocumentData> = lastDoc
+        ? query(
+            collection(db, path),
+            orderBy('createdAt', 'desc'),
+            startAfter(lastDoc),
+            limit(PAGE_SIZE)
+          )
+        : query(
+            collection(db, path),
+            orderBy('createdAt', 'desc'),
+            limit(PAGE_SIZE)
+          );
+      const snapshot: QuerySnapshot<DocumentData> = await getDocs(q);
+      if (snapshot.empty) break;
+      allDocs.push(...snapshot.docs);
+      if (snapshot.docs.length < PAGE_SIZE) break;
+      lastDoc = snapshot.docs[snapshot.docs.length - 1];
+    }
 
-    for (const docSnap of snapshot.docs) {
-      const data = docSnap.data();
-      const mediaType: 'photo' | 'video' = data.type === 'video' ? 'video' : 'photo';
-      const isChunked = Boolean(data.isChunked);
-      let resolvedUrl: string = typeof data.url === 'string' ? data.url : '';
+    // Resolve cached blobs in parallel and return immediately without blocking on
+    // uncached chunked photo subcollections (those load progressively afterwards).
+    const resolvedItems = await Promise.all(
+      allDocs.map(async (docSnap): Promise<MemoryItem | null> => {
+        const data = docSnap.data();
+        const mediaType: 'photo' | 'video' = data.type === 'video' ? 'video' : 'photo';
+        const isChunked = Boolean(data.isChunked);
+        let resolvedUrl: string = typeof data.url === 'string' ? data.url : '';
 
-      if (isChunked) {
-        // Always check local IndexedDB cache first to avoid Firestore chunk reads
-        const cachedBlob = await getCachedMediaBlob(docSnap.id);
-        if (cachedBlob) {
-          resolvedUrl = URL.createObjectURL(cachedBlob);
-        } else if (mediaType === 'photo') {
-          // Photos need thumbnails on gallery load; videos lazy-load on click in Lightbox
-          resolvedUrl = await resolveChunkedMemoryUrl(docSnap.id);
+        if (isChunked) {
+          const existingUrl = resolvedObjectUrlMap.get(docSnap.id);
+          if (existingUrl) {
+            resolvedUrl = existingUrl;
+          } else {
+            const cachedBlob = await getCachedMediaBlob(docSnap.id);
+            if (cachedBlob) {
+              resolvedUrl = getOrCreateObjectUrl(docSnap.id, cachedBlob);
+            }
+          }
         }
-      }
 
-      if (resolvedUrl || (isChunked && mediaType === 'video')) {
-        items.push({
+        if (!resolvedUrl && !isChunked) {
+          return null;
+        }
+
+        return {
           id: docSnap.id,
           type: mediaType,
           url: resolvedUrl,
@@ -423,12 +522,14 @@ export async function fetchMemoriesFromFirestore(): Promise<MemoryItem[]> {
           aspectRatio: data.aspectRatio || (mediaType === 'video' ? '16:9' : '4:3'),
           isCustom: true,
           isChunked,
-        });
-      }
-    }
+        };
+      })
+    );
 
-    // Save lightweight metadata fallback in IndexedDB
-    await saveCachedMemoriesList(items);
+    const items = resolvedItems.filter((item): item is MemoryItem => item !== null);
+
+    // Persist metadata fallback asynchronously without delaying gallery render
+    void saveCachedMemoriesList(items);
     return items;
   } catch (error) {
     handleFirestoreError(error, OperationType.LIST, path);
@@ -442,9 +543,13 @@ export async function getCachedMemoriesFallback(): Promise<MemoryItem[]> {
   return Promise.all(
     cached.map(async (item) => {
       if (!item.url && item.isChunked) {
+        const existingUrl = resolvedObjectUrlMap.get(item.id);
+        if (existingUrl) {
+          return { ...item, url: existingUrl };
+        }
         const cachedBlob = await getCachedMediaBlob(item.id);
         if (cachedBlob) {
-          return { ...item, url: URL.createObjectURL(cachedBlob) };
+          return { ...item, url: getOrCreateObjectUrl(item.id, cachedBlob) };
         }
       }
       return item;
@@ -468,7 +573,13 @@ export async function deleteMemoryFromFirestore(memoryId: string): Promise<void>
 
     batch.delete(memoryRef);
     await batch.commit();
+    revokeCachedObjectUrl(memoryId);
     await deleteCachedMediaBlob(memoryId);
+
+    const cached = await getCachedMemoriesList();
+    if (cached) {
+      await saveCachedMemoriesList(cached.filter((item) => item.id !== memoryId));
+    }
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, path);
   }
@@ -564,11 +675,11 @@ export async function getCachedLetterFallback(): Promise<LoveLetterData | null> 
 export async function saveLetterToFirestore(
   letter: LoveLetterData,
   authorId: string
-): Promise<void> {
+): Promise<LoveLetterData> {
   const path = 'letter/birthday';
   const letterRef = doc(db, 'letter', 'birthday');
   const paragraphs = letter.paragraphs
-    .map((p) => p.trim())
+    .map((p) => p.trim().slice(0, 4000))
     .filter((p) => p.length > 0)
     .slice(0, 30);
 
@@ -587,17 +698,26 @@ export async function saveLetterToFirestore(
     ''
   ).slice(0, 300);
 
+  const safeRecipient = letter.recipient.trim().slice(0, 80) || 'Tsi';
+  const safeNotice = (letter.notice || '').trim().slice(0, 400);
+  const safeSalutation = letter.salutation.trim().slice(0, 160) || 'Happy Birthday';
+  const safeClosing = letter.closing.trim().slice(0, 120) || 'With all my love,';
+  const safeSignature = letter.signature.trim().slice(0, 120) || 'Yours ❤️';
+  const safeAnniversaryDate =
+    (letter.anniversaryDate || 'On Your Special Birthday').trim().slice(0, 80) ||
+    'On Your Special Birthday';
+
   try {
     const existing = await getDoc(letterRef);
     if (!existing.exists()) {
       await setDoc(letterRef, {
-        recipient: (letter.recipient || 'Tsi').slice(0, 80),
-        notice: (letter.notice || '').slice(0, 400),
-        salutation: (letter.salutation || 'Happy Birthday').slice(0, 160),
+        recipient: safeRecipient,
+        notice: safeNotice,
+        salutation: safeSalutation,
         paragraphs,
-        closing: (letter.closing || 'With all my love,').slice(0, 120),
-        signature: (letter.signature || 'Yours ❤️').slice(0, 120),
-        anniversaryDate: (letter.anniversaryDate || 'On Your Special Birthday').slice(0, 80),
+        closing: safeClosing,
+        signature: safeSignature,
+        anniversaryDate: safeAnniversaryDate,
         bottomPhotoUrl,
         bottomPhotoCaption,
         authorId,
@@ -605,24 +725,32 @@ export async function saveLetterToFirestore(
       });
     } else {
       await updateDoc(letterRef, {
-        recipient: (letter.recipient || 'Tsi').slice(0, 80),
-        notice: (letter.notice || '').slice(0, 400),
-        salutation: (letter.salutation || 'Happy Birthday').slice(0, 160),
+        recipient: safeRecipient,
+        notice: safeNotice,
+        salutation: safeSalutation,
         paragraphs,
-        closing: (letter.closing || 'With all my love,').slice(0, 120),
-        signature: (letter.signature || 'Yours ❤️').slice(0, 120),
-        anniversaryDate: (letter.anniversaryDate || 'On Your Special Birthday').slice(0, 80),
+        closing: safeClosing,
+        signature: safeSignature,
+        anniversaryDate: safeAnniversaryDate,
         bottomPhotoUrl,
         bottomPhotoCaption,
         updatedAt: serverTimestamp(),
       });
     }
-    await saveCachedLetter({
+    const savedLetter: LoveLetterData = {
       ...letter,
+      recipient: safeRecipient,
+      notice: safeNotice,
+      salutation: safeSalutation,
       paragraphs,
+      closing: safeClosing,
+      signature: safeSignature,
+      anniversaryDate: safeAnniversaryDate,
       bottomPhotoUrl,
       bottomPhotoCaption,
-    });
+    };
+    await saveCachedLetter(savedLetter);
+    return savedLetter;
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, path);
   }
@@ -646,12 +774,12 @@ export const DEFAULT_GATE_CONFIG: AccessGateConfig = {
 };
 
 function fallbackSha256Hex(ascii: string): string {
-  const utf8 = unescape(encodeURIComponent(ascii));
+  const bytes = new TextEncoder().encode(ascii);
   const words: number[] = [];
-  for (let i = 0; i < utf8.length; i++) {
-    words[i >> 2] |= utf8.charCodeAt(i) << (24 - (i % 4) * 8);
+  for (let i = 0; i < bytes.length; i++) {
+    words[i >> 2] |= bytes[i] << (24 - (i % 4) * 8);
   }
-  const bitLen = utf8.length * 8;
+  const bitLen = bytes.length * 8;
   words[bitLen >> 5] |= 0x80 << (24 - (bitLen % 32));
   words[(((bitLen + 64) >> 9) << 4) + 15] = bitLen;
 

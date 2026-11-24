@@ -5,9 +5,14 @@ const DB_VERSION = 1;
 const MEDIA_STORE = 'media_blobs';
 const META_STORE = 'metadata';
 
+let cachedDbPromise: Promise<IDBDatabase> | null = null;
+
 function openCacheDb(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
+  if (cachedDbPromise) return cachedDbPromise;
+
+  cachedDbPromise = new Promise((resolve, reject) => {
     if (typeof indexedDB === 'undefined') {
+      cachedDbPromise = null;
       reject(new Error('IndexedDB unavailable'));
       return;
     }
@@ -21,9 +26,24 @@ function openCacheDb(): Promise<IDBDatabase> {
         db.createObjectStore(META_STORE);
       }
     };
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error || new Error('IndexedDB error'));
+    request.onsuccess = () => {
+      const db = request.result;
+      db.onclose = () => {
+        cachedDbPromise = null;
+      };
+      db.onversionchange = () => {
+        db.close();
+        cachedDbPromise = null;
+      };
+      resolve(db);
+    };
+    request.onerror = () => {
+      cachedDbPromise = null;
+      reject(request.error || new Error('IndexedDB error'));
+    };
   });
+
+  return cachedDbPromise;
 }
 
 export async function getCachedMediaBlob(memoryId: string): Promise<Blob | null> {
@@ -50,6 +70,7 @@ export async function saveCachedMediaBlob(memoryId: string, blob: Blob): Promise
       tx.objectStore(MEDIA_STORE).put(blob, memoryId);
       tx.oncomplete = () => resolve();
       tx.onerror = () => resolve();
+      tx.onabort = () => resolve();
     });
   } catch {
     // Ignore storage quota / private mode issues
@@ -64,6 +85,7 @@ export async function deleteCachedMediaBlob(memoryId: string): Promise<void> {
       tx.objectStore(MEDIA_STORE).delete(memoryId);
       tx.oncomplete = () => resolve();
       tx.onerror = () => resolve();
+      tx.onabort = () => resolve();
     });
   } catch {
     // Ignore
@@ -99,6 +121,7 @@ export async function saveCachedMemoriesList(items: MemoryItem[]): Promise<void>
       tx.objectStore(META_STORE).put(serializable, 'memories_list');
       tx.oncomplete = () => resolve();
       tx.onerror = () => resolve();
+      tx.onabort = () => resolve();
     });
   } catch {
     // Ignore
@@ -129,6 +152,7 @@ export async function saveCachedLetter(letter: LoveLetterData): Promise<void> {
       tx.objectStore(META_STORE).put(letter, 'love_letter');
       tx.oncomplete = () => resolve();
       tx.onerror = () => resolve();
+      tx.onabort = () => resolve();
     });
   } catch {
     // Ignore
@@ -159,6 +183,7 @@ export async function saveCachedGateConfig(config: AccessGateConfig): Promise<vo
       tx.objectStore(META_STORE).put(config, 'access_gate');
       tx.oncomplete = () => resolve();
       tx.onerror = () => resolve();
+      tx.onabort = () => resolve();
     });
   } catch {
     // Ignore

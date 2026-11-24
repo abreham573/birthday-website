@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { onAuthStateChanged, User } from 'firebase/auth';
 import { Lock, AlertTriangle, ExternalLink, KeyRound } from 'lucide-react';
 import { TabType, MemoryItem, LoveLetterData, AccessGateConfig } from './types';
@@ -92,7 +92,40 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
-  // Load Front-Page Password Gate config on mount
+  // Warm gate, memories, and letter immediately from IndexedDB cache on mount (0 Firestore reads!)
+  useEffect(() => {
+    let active = true;
+
+    async function hydrateLocalCache() {
+      const [cachedGate, cachedMemories, cachedLetter] = await Promise.all([
+        getCachedGateConfigFallback().catch(() => null),
+        getCachedMemoriesFallback().catch(() => []),
+        getCachedLetterFallback().catch(() => null),
+      ]);
+
+      if (!active) return;
+
+      if (cachedGate) {
+        setGateConfig(cachedGate);
+        setIsLoadingGate(false);
+      }
+      if (cachedMemories.length > 0) {
+        setMemories((prev) => (prev.length > 0 ? prev : cachedMemories));
+        setIsLoadingMemories(false);
+      }
+      if (cachedLetter) {
+        setLetterData(cachedLetter);
+      }
+    }
+
+    hydrateLocalCache();
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  // Refresh Front-Page Password Gate config from Firestore on mount
   useEffect(() => {
     let active = true;
 
@@ -124,43 +157,74 @@ export default function App() {
     };
   }, []);
 
-  // Fetch cloud-persisted memories & love letter once unlocked (or signed in as owner)
+  const hasLoadedCloudRef = useRef<boolean>(false);
+  const canLoadCloud = isUnlocked || isOwner;
+
+  // Fetch cloud-persisted memories & love letter independently once unlocked (or signed in as owner)
   useEffect(() => {
-    if (!isUnlocked && !isOwner) return;
+    if (!canLoadCloud || hasLoadedCloudRef.current) return;
 
     let active = true;
-    setIsLoadingMemories(true);
 
-    async function loadCloudData() {
-      let hitQuota = false;
+    async function syncMemories() {
       try {
-        const [cloudMemories, cloudLetter] = await Promise.all([
-          fetchMemoriesFromFirestore().catch(async (err) => {
-            if (isQuotaExceededError(err)) {
-              hitQuota = true;
-            }
-            console.error('Failed to load memories from Firestore:', err);
-            return await getCachedMemoriesFallback();
-          }),
-          fetchLetterFromFirestore().catch(async (err) => {
-            if (isQuotaExceededError(err)) {
-              hitQuota = true;
-            }
-            console.error('Failed to load letter from Firestore:', err);
-            return await getCachedLetterFallback();
-          }),
-        ]);
+        const cloudMemories = await fetchMemoriesFromFirestore().catch((err) => {
+          if (isQuotaExceededError(err)) {
+            setQuotaExceeded(true);
+          }
+          console.error('Failed to load memories from Firestore:', err);
+          return null;
+        });
 
         if (!active) return;
 
-        if (hitQuota) {
-          setQuotaExceeded(true);
-        }
-        if (cloudMemories.length > 0) {
-          setMemories(cloudMemories);
-        }
-        if (cloudLetter) {
-          setLetterData(cloudLetter);
+        const resolvedMemories =
+          cloudMemories !== null ? cloudMemories : await getCachedMemoriesFallback();
+
+        if (!active) return;
+
+        if (cloudMemories !== null || resolvedMemories.length > 0) {
+          // Preserve existing live URLs for identical items so cached views don't flicker
+          setMemories((prev) => {
+            const prevUrlById = new Map(
+              prev.filter((m) => Boolean(m.url)).map((m) => [m.id, m.url])
+            );
+            return resolvedMemories.map((item) => {
+              const existingUrl = prevUrlById.get(item.id);
+              if (existingUrl && !item.url) {
+                return { ...item, url: existingUrl };
+              }
+              return item;
+            });
+          });
+          setIsLoadingMemories(false);
+
+          // Progressively load any uncached chunked photos in the background (cover photo first)
+          const pendingChunkedPhotos = resolvedMemories.filter(
+            (m) => m.type === 'photo' && m.isChunked && !m.url
+          );
+          if (pendingChunkedPhotos.length > 0) {
+            for (let i = 0; i < pendingChunkedPhotos.length; i += 3) {
+              if (!active) break;
+              const slice = pendingChunkedPhotos.slice(i, i + 3);
+              const results = await Promise.allSettled(
+                slice.map(async (photo) => {
+                  const url = await resolveChunkedMemoryUrl(photo.id);
+                  if (!active || !url) return;
+                  setMemories((prev) =>
+                    prev.map((m) => (m.id === photo.id && !m.url ? { ...m, url } : m))
+                  );
+                })
+              );
+              const hitQuota = results.some(
+                (r) => r.status === 'rejected' && isQuotaExceededError(r.reason)
+              );
+              if (hitQuota) {
+                if (active) setQuotaExceeded(true);
+                break;
+              }
+            }
+          }
         }
       } finally {
         if (active) {
@@ -169,12 +233,29 @@ export default function App() {
       }
     }
 
-    loadCloudData();
+    async function syncLetter() {
+      const cloudLetter = await fetchLetterFromFirestore().catch(async (err) => {
+        if (isQuotaExceededError(err)) {
+          setQuotaExceeded(true);
+        }
+        console.error('Failed to load letter from Firestore:', err);
+        return await getCachedLetterFallback();
+      });
+
+      if (!active) return;
+      if (cloudLetter) {
+        setLetterData(cloudLetter);
+      }
+    }
+
+    hasLoadedCloudRef.current = true;
+    void syncMemories();
+    void syncLetter();
 
     return () => {
       active = false;
     };
-  }, [isUnlocked, isOwner]);
+  }, [canLoadCloud]);
 
   const handleUnlock = () => {
     try {
@@ -228,12 +309,17 @@ export default function App() {
     if (!user || !isOwner) {
       throw new Error('Please sign in with the creator Google account to update the password.');
     }
-    const updated = await saveGateConfigToFirestore({
-      ...params,
-      existingPasswordHash: gateConfig.passwordHash,
-      authorId: user.uid,
-    });
-    setGateConfig(updated);
+    try {
+      const updated = await saveGateConfigToFirestore({
+        ...params,
+        existingPasswordHash: gateConfig.passwordHash,
+        authorId: user.uid,
+      });
+      setGateConfig(updated);
+    } catch (err) {
+      if (isQuotaExceededError(err)) setQuotaExceeded(true);
+      throw err;
+    }
   };
 
   // Save letter to Firestore when signed in as owner
@@ -241,8 +327,13 @@ export default function App() {
     if (!user || !isOwner) {
       throw new Error('Please sign in with the creator Google account to save changes.');
     }
-    await saveLetterToFirestore(updated, user.uid);
-    setLetterData(updated);
+    try {
+      const saved = await saveLetterToFirestore(updated, user.uid);
+      setLetterData(saved);
+    } catch (err) {
+      if (isQuotaExceededError(err)) setQuotaExceeded(true);
+      throw err;
+    }
   };
 
   // Add new photo or video to UI state (already persisted to Firestore by AddMediaModal)
@@ -269,29 +360,43 @@ export default function App() {
     if (!isOwner) {
       throw new Error('Please sign in with the creator Google account to edit captions.');
     }
-    const updated = await updateMemoryMetadataInFirestore({
-      memoryId: params.id,
-      title: params.title,
-      caption: params.caption,
-      date: params.date,
-      tag: params.tag,
-    });
-    setMemories((prev) =>
-      prev.map((m) => (m.id === params.id ? { ...m, ...updated } : m))
-    );
-    setSelectedLightboxItem((prev) =>
-      prev && prev.id === params.id ? { ...prev, ...updated } : prev
-    );
+    try {
+      const updated = await updateMemoryMetadataInFirestore({
+        memoryId: params.id,
+        title: params.title,
+        caption: params.caption,
+        date: params.date,
+        tag: params.tag,
+      });
+      setMemories((prev) =>
+        prev.map((m) => (m.id === params.id ? { ...m, ...updated } : m))
+      );
+      setSelectedLightboxItem((prev) =>
+        prev && prev.id === params.id ? { ...prev, ...updated } : prev
+      );
+    } catch (err) {
+      if (isQuotaExceededError(err)) setQuotaExceeded(true);
+      throw err;
+    }
   };
 
   // Delete memory permanently from Firestore
   const handleDeleteMemory = async (id: string) => {
-    if (!isOwner) return;
+    if (!isOwner) {
+      throw new Error('Please sign in with the creator Google account to remove memories.');
+    }
     try {
+      const target = memories.find((m) => m.id === id);
       await deleteMemoryFromFirestore(id);
+      if (target?.url.startsWith('blob:')) {
+        URL.revokeObjectURL(target.url);
+      }
       setMemories((prev) => prev.filter((m) => m.id !== id));
+      setSelectedLightboxItem((prev) => (prev?.id === id ? null : prev));
     } catch (err) {
+      if (isQuotaExceededError(err)) setQuotaExceeded(true);
       console.error('Failed to delete memory from Firestore:', err);
+      throw err;
     }
   };
 
@@ -319,7 +424,7 @@ export default function App() {
               <div className="rounded-2xl bg-amber-950/70 border border-amber-500/35 p-3.5 text-xs text-amber-100 flex items-start gap-2.5 backdrop-blur-md">
                 <AlertTriangle className="w-4 h-4 text-amber-300 shrink-0 mt-0.5" />
                 <p className="text-amber-100/85 leading-relaxed">
-                  Daily free database read limit reached. Cached items on this device still work, and free reads reset tomorrow.
+                  Daily free database quota limit reached. Cached items on this device still work, and free daily limits reset tomorrow.
                 </p>
               </div>
             </div>
@@ -355,10 +460,10 @@ export default function App() {
                     <AlertTriangle className="w-4 h-4 text-amber-300 shrink-0 mt-0.5" />
                     <div>
                       <p className="font-semibold text-amber-200">
-                        Daily free Firestore read limit reached
+                        Daily free Firestore quota limit reached
                       </p>
                       <p className="text-amber-100/80 mt-0.5 leading-relaxed">
-                        Free daily database read units reset tomorrow. Cached items on this device still load offline, or you can upgrade your database quota in Firebase Console.
+                        Free daily database read/write limits reset tomorrow. Cached items on this device still load offline, or you can upgrade your database quota in Firebase Console.
                       </p>
                     </div>
                   </div>
@@ -432,6 +537,7 @@ export default function App() {
             onClose={() => setIsAddModalOpen(false)}
             onAdd={handleAddMemory}
             onAddMultiple={handleAddMultipleMemories}
+            onQuotaExceeded={() => setQuotaExceeded(true)}
             user={user}
             isOwner={isOwner}
             onSignInOwner={handleSignInOwner}
@@ -440,7 +546,7 @@ export default function App() {
 
           {/* Footer */}
           <footer className="relative z-10 border-t border-rose-500/15 py-8 text-center text-xs text-rose-300/60 pb-24 md:pb-8">
-            <div className="inline-flex items-center justify-center gap-2">
+            <div className="inline-flex flex-wrap items-center justify-center gap-2 px-4">
               <p>Made with all my love for Tsi ❤️ Happy Birthday</p>
               <button
                 type="button"
@@ -461,6 +567,9 @@ export default function App() {
                 <Lock className="w-3 h-3" />
               </button>
             </div>
+            <p className="mt-2 font-serif-cormorant italic text-base sm:text-lg text-rose-200/90">
+              Te amo mi vida ❤️
+            </p>
           </footer>
         </>
       )}

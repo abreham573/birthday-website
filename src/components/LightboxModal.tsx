@@ -19,7 +19,7 @@ interface LightboxModalProps {
   isOwner?: boolean;
   onClose: () => void;
   onSelect: (item: MemoryItem) => void;
-  onDelete?: (id: string) => void;
+  onDelete?: (id: string) => Promise<void> | void;
   onResolveMedia?: (id: string) => Promise<string>;
 }
 
@@ -47,6 +47,8 @@ export const LightboxModal: React.FC<LightboxModalProps> = ({
 }) => {
   const [loadingMedia, setLoadingMedia] = useState(false);
   const [mediaError, setMediaError] = useState<string | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const [zoomIndex, setZoomIndex] = useState<number>(2); // 1.0 (100% Fit)
   const [isExpanded, setIsExpanded] = useState<boolean>(false);
 
@@ -76,9 +78,11 @@ export const LightboxModal: React.FC<LightboxModalProps> = ({
     setZoomIndex(2);
   }, []);
 
-  // Reset zoom when switching between photos
+  // Reset zoom and delete error when switching between photos
   useEffect(() => {
     setZoomIndex(2);
+    setDeleteError(null);
+    setIsDeleting(false);
   }, [item?.id]);
 
   // Lazy-load chunked media only when opened
@@ -312,18 +316,43 @@ export const LightboxModal: React.FC<LightboxModalProps> = ({
 
               {isOwner && onDelete && (
                 <button
-                  onClick={() => {
-                    onDelete(item.id);
-                    onClose();
+                  type="button"
+                  disabled={isDeleting}
+                  onClick={async () => {
+                    setDeleteError(null);
+                    setIsDeleting(true);
+                    try {
+                      await onDelete(item.id);
+                      onClose();
+                    } catch (err) {
+                      const msg = err instanceof Error ? err.message : String(err);
+                      setDeleteError(
+                        msg.toLowerCase().includes('quota')
+                          ? 'Daily free database write limit reached. Cannot remove right now.'
+                          : 'Could not remove this memory right now.'
+                      );
+                    } finally {
+                      setIsDeleting(false);
+                    }
                   }}
-                  className="flex items-center gap-1 text-xs text-red-400 hover:text-red-300 transition-colors p-1 cursor-pointer"
+                  className="flex items-center gap-1 text-xs text-red-400 hover:text-red-300 transition-colors p-1 cursor-pointer disabled:opacity-50"
                   title="Delete this memory"
                 >
-                  <Trash2 className="w-3.5 h-3.5" />
-                  <span>Remove</span>
+                  {isDeleting ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <Trash2 className="w-3.5 h-3.5" />
+                  )}
+                  <span>{isDeleting ? 'Removing...' : 'Remove'}</span>
                 </button>
               )}
             </div>
+
+            {deleteError && (
+              <p className="text-xs text-red-300 bg-red-950/60 border border-red-500/30 rounded-lg px-3 py-1.5 mt-2">
+                {deleteError}
+              </p>
+            )}
 
             <h3 className="font-serif-cormorant text-xl sm:text-2xl font-bold text-white mt-1.5">
               {item.title}

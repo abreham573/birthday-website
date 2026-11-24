@@ -63,7 +63,7 @@ export const Navbar: React.FC<NavbarProps> = ({
               <Heart className="w-3.5 h-3.5 fill-current text-rose-400" />
               <span>02. Love Letter</span>
               {heartCount > 0 && (
-                <span className="ml-0.5 text-[10px] bg-rose-950 text-rose-300 px-1.5 py-0.2 rounded-full border border-rose-500/30">
+                <span className="ml-0.5 text-[10px] bg-rose-950 text-rose-300 px-1.5 py-0.5 rounded-full border border-rose-500/30">
                   {heartCount}
                 </span>
               )}

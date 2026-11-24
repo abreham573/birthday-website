@@ -52,8 +52,10 @@ export const LoveLetterPage: React.FC<LoveLetterPageProps> = ({
     letterData.bottomPhotoCaption || DEFAULT_LOVE_LETTER.bottomPhotoCaption || '';
 
   useEffect(() => {
-    setEditedLetter(letterData);
-  }, [letterData]);
+    if (!isEditing) {
+      setEditedLetter(letterData);
+    }
+  }, [letterData, isEditing]);
 
   useEffect(() => {
     return () => {
@@ -82,7 +84,7 @@ export const LoveLetterPage: React.FC<LoveLetterPageProps> = ({
     setPhase('sealed');
   };
 
-  const handleLetterTap = (e: React.MouseEvent<HTMLDivElement>) => {
+  const handleLetterTap = (e: React.MouseEvent<HTMLElement>) => {
     if (isEditing) return;
     onHeartTap(e.clientX, e.clientY);
   };
@@ -320,8 +322,9 @@ export const LoveLetterPage: React.FC<LoveLetterPageProps> = ({
             <div className="flex items-center justify-between mb-4 px-2">
               <button
                 type="button"
+                disabled={isSaving}
                 onClick={handleFoldBack}
-                className="text-xs text-rose-300/80 hover:text-white flex items-center gap-1.5 transition-colors cursor-pointer"
+                className="text-xs text-rose-300/80 hover:text-white flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50"
               >
                 <RefreshCw className="w-3.5 h-3.5" />
                 <span>Fold Back Into Envelope</span>
@@ -330,8 +333,13 @@ export const LoveLetterPage: React.FC<LoveLetterPageProps> = ({
               {isOwner && (
                 <button
                   type="button"
-                  onClick={() => setIsEditing(!isEditing)}
-                  className="flex items-center gap-1.5 text-xs text-rose-300 hover:text-white bg-rose-950/60 px-3 py-1.5 rounded-lg border border-rose-500/20 transition-colors cursor-pointer"
+                  disabled={isSaving}
+                  onClick={() => {
+                    setSaveError(null);
+                    setPhotoSaveStatus(null);
+                    setIsEditing(!isEditing);
+                  }}
+                  className="flex items-center gap-1.5 text-xs text-rose-300 hover:text-white bg-rose-950/60 px-3 py-1.5 rounded-lg border border-rose-500/20 transition-colors cursor-pointer disabled:opacity-50"
                 >
                   {isEditing ? (
                     <Check className="w-3.5 h-3.5 text-emerald-400" />

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   X,
   Upload,
@@ -17,6 +17,7 @@ import { MemoryItem } from '../types';
 import {
   uploadMemoryFileToFirestore,
   saveMemoryUrlToFirestore,
+  isQuotaExceededError,
 } from '../lib/memoriesService';
 import { OWNER_EMAIL } from '../lib/firebase';
 
@@ -25,15 +26,17 @@ interface AddMediaModalProps {
   onClose: () => void;
   onAdd: (item: MemoryItem) => void;
   onAddMultiple?: (items: MemoryItem[]) => void;
+  onQuotaExceeded?: () => void;
   user: User | null;
   isOwner: boolean;
   onSignInOwner: () => Promise<void>;
   onSignOutOwner: () => Promise<void>;
 }
 
-interface SelectedFilePreview {
-  url: string;
-  name: string;
+interface SelectedMediaFile {
+  id: string;
+  file: File;
+  previewUrl: string;
 }
 
 export const AddMediaModal: React.FC<AddMediaModalProps> = ({
@@ -41,6 +44,7 @@ export const AddMediaModal: React.FC<AddMediaModalProps> = ({
   onClose,
   onAdd,
   onAddMultiple,
+  onQuotaExceeded,
   user,
   isOwner,
   onSignInOwner,
@@ -49,8 +53,7 @@ export const AddMediaModal: React.FC<AddMediaModalProps> = ({
   const [mediaType, setMediaType] = useState<'photo' | 'video'>('photo');
   const [sourceMode, setSourceMode] = useState<'upload' | 'url'>('upload');
   const [urlInput, setUrlInput] = useState('');
-  const [selectedRawFiles, setSelectedRawFiles] = useState<File[]>([]);
-  const [selectedPreviews, setSelectedPreviews] = useState<SelectedFilePreview[]>([]);
+  const [selectedItems, setSelectedItems] = useState<SelectedMediaFile[]>([]);
   const [title, setTitle] = useState('');
   const [caption, setCaption] = useState('');
   const [date, setDate] = useState('Birthday Special');
@@ -59,6 +62,22 @@ export const AddMediaModal: React.FC<AddMediaModalProps> = ({
   const [uploadStatus, setUploadStatus] = useState<string>('');
   const [authLoading, setAuthLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
+
+  const selectedItemsRef = useRef<SelectedMediaFile[]>(selectedItems);
+  selectedItemsRef.current = selectedItems;
+
+  useEffect(() => {
+    return () => {
+      selectedItemsRef.current.forEach((item) => URL.revokeObjectURL(item.previewUrl));
+    };
+  }, []);
+
+  const clearSelectedItems = () => {
+    setSelectedItems((prev) => {
+      prev.forEach((item) => URL.revokeObjectURL(item.previewUrl));
+      return [];
+    });
+  };
 
   if (!isOpen) return null;
 
@@ -84,7 +103,7 @@ export const AddMediaModal: React.FC<AddMediaModalProps> = ({
     if (!files || files.length === 0) return;
 
     const fileList = Array.from(files);
-    const validFiles: File[] = [];
+    const nextItems: SelectedMediaFile[] = [];
 
     for (const file of fileList) {
       if (mediaType === 'photo' && !file.type.startsWith('image/')) {
@@ -95,37 +114,40 @@ export const AddMediaModal: React.FC<AddMediaModalProps> = ({
         setError('Please select video files (MP4, WebM, MOV).');
         continue;
       }
-      validFiles.push(file);
+      nextItems.push({
+        id: `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        file,
+        previewUrl: URL.createObjectURL(file),
+      });
     }
 
-    if (validFiles.length === 0) return;
+    // Reset input so re-selecting the same file after removing it still fires onChange
+    e.target.value = '';
 
-    setSelectedRawFiles((prev) => [...prev, ...validFiles]);
-
-    const newPreviews: SelectedFilePreview[] = [];
-    let processed = 0;
-
-    validFiles.forEach((file) => {
-      const reader = new FileReader();
-      reader.onload = () => {
-        if (typeof reader.result === 'string') {
-          newPreviews.push({
-            url: reader.result,
-            name: file.name,
-          });
-        }
-        processed++;
-        if (processed === validFiles.length) {
-          setSelectedPreviews((prev) => [...prev, ...newPreviews]);
-        }
-      };
-      reader.readAsDataURL(file);
-    });
+    if (nextItems.length === 0) return;
+    setSelectedItems((prev) => [...prev, ...nextItems]);
   };
 
   const handleRemovePreview = (index: number) => {
-    setSelectedPreviews((prev) => prev.filter((_, i) => i !== index));
-    setSelectedRawFiles((prev) => prev.filter((_, i) => i !== index));
+    setSelectedItems((prev) => {
+      const target = prev[index];
+      if (target) {
+        URL.revokeObjectURL(target.previewUrl);
+      }
+      return prev.filter((_, i) => i !== index);
+    });
+  };
+
+  const commitUploadedItems = (uploadedItems: MemoryItem[]) => {
+    if (uploadedItems.length === 1) {
+      onAdd(uploadedItems[0]);
+    } else if (uploadedItems.length > 1) {
+      if (onAddMultiple) {
+        onAddMultiple(uploadedItems);
+      } else {
+        uploadedItems.forEach((it) => onAdd(it));
+      }
+    }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -138,26 +160,27 @@ export const AddMediaModal: React.FC<AddMediaModalProps> = ({
     }
 
     if (sourceMode === 'upload') {
-      if (selectedRawFiles.length === 0) {
+      if (selectedItems.length === 0) {
         setError('Please select at least one photo or video of Tsi.');
         return;
       }
 
       setIsUploading(true);
       const uploadedItems: MemoryItem[] = [];
+      let uploadedCount = 0;
 
       try {
-        for (let i = 0; i < selectedRawFiles.length; i++) {
-          const file = selectedRawFiles[i];
+        for (let i = 0; i < selectedItems.length; i++) {
+          const { file } = selectedItems[i];
           const itemTitle =
-            selectedRawFiles.length === 1
+            selectedItems.length === 1
               ? title.trim() || 'My Beautiful Tsi ❤️'
               : title.trim()
                 ? `${title.trim()} (${i + 1})`
                 : `Tsi Memory #${i + 1}`;
 
           setUploadStatus(
-            `Saving ${i + 1} of ${selectedRawFiles.length} to cloud...`
+            `Saving ${i + 1} of ${selectedItems.length} to cloud...`
           );
 
           const savedItem = await uploadMemoryFileToFirestore({
@@ -171,27 +194,33 @@ export const AddMediaModal: React.FC<AddMediaModalProps> = ({
           });
 
           uploadedItems.push(savedItem);
+          uploadedCount++;
         }
 
-        if (uploadedItems.length === 1) {
-          onAdd(uploadedItems[0]);
-        } else if (uploadedItems.length > 1) {
-          if (onAddMultiple) {
-            onAddMultiple(uploadedItems);
-          } else {
-            uploadedItems.forEach((it) => onAdd(it));
-          }
-        }
-
+        commitUploadedItems(uploadedItems);
         handleReset();
         onClose();
       } catch (uploadErr) {
         console.error('Cloud upload error:', uploadErr);
-        setError(
-          uploadErr instanceof Error
-            ? uploadErr.message
-            : 'Failed to save to cloud. Please try again.'
-        );
+        if (uploadedCount > 0) {
+          commitUploadedItems(uploadedItems);
+          setSelectedItems((prev) => {
+            prev.slice(0, uploadedCount).forEach((item) => URL.revokeObjectURL(item.previewUrl));
+            return prev.slice(uploadedCount);
+          });
+        }
+        if (isQuotaExceededError(uploadErr)) {
+          onQuotaExceeded?.();
+          setError(
+            'Daily free Firestore quota limit reached. Free daily limits reset tomorrow, or you can upgrade your database plan in Firebase Console.'
+          );
+        } else {
+          setError(
+            uploadErr instanceof Error
+              ? uploadErr.message
+              : 'Failed to save to cloud. Please try again.'
+          );
+        }
       } finally {
         setIsUploading(false);
         setUploadStatus('');
@@ -221,11 +250,18 @@ export const AddMediaModal: React.FC<AddMediaModalProps> = ({
         handleReset();
         onClose();
       } catch (err) {
-        setError(
-          err instanceof Error
-            ? err.message
-            : 'Could not save link. Please try again.'
-        );
+        if (isQuotaExceededError(err)) {
+          onQuotaExceeded?.();
+          setError(
+            'Daily free Firestore quota limit reached. Free daily limits reset tomorrow, or you can upgrade your database plan in Firebase Console.'
+          );
+        } else {
+          setError(
+            err instanceof Error
+              ? err.message
+              : 'Could not save link. Please try again.'
+          );
+        }
       } finally {
         setIsUploading(false);
         setUploadStatus('');
@@ -235,8 +271,7 @@ export const AddMediaModal: React.FC<AddMediaModalProps> = ({
 
   const handleReset = () => {
     setUrlInput('');
-    setSelectedRawFiles([]);
-    setSelectedPreviews([]);
+    clearSelectedItems();
     setTitle('');
     setCaption('');
     setDate('Birthday Special');
@@ -358,8 +393,8 @@ export const AddMediaModal: React.FC<AddMediaModalProps> = ({
                 disabled={isUploading}
                 onClick={() => {
                   setMediaType('photo');
-                  setSelectedPreviews([]);
-                  setSelectedRawFiles([]);
+                  clearSelectedItems();
+                  setError(null);
                 }}
                 className={`flex-1 flex items-center justify-center gap-2 py-2 text-xs font-medium rounded-lg transition-all ${
                   mediaType === 'photo'
@@ -375,8 +410,8 @@ export const AddMediaModal: React.FC<AddMediaModalProps> = ({
                 disabled={isUploading}
                 onClick={() => {
                   setMediaType('video');
-                  setSelectedPreviews([]);
-                  setSelectedRawFiles([]);
+                  clearSelectedItems();
+                  setError(null);
                 }}
                 className={`flex-1 flex items-center justify-center gap-2 py-2 text-xs font-medium rounded-lg transition-all ${
                   mediaType === 'video'
@@ -396,7 +431,10 @@ export const AddMediaModal: React.FC<AddMediaModalProps> = ({
                 <button
                   type="button"
                   disabled={isUploading}
-                  onClick={() => setSourceMode('upload')}
+                  onClick={() => {
+                    setSourceMode('upload');
+                    setError(null);
+                  }}
                   className={`px-2.5 py-1 rounded text-xs transition-colors ${
                     sourceMode === 'upload'
                       ? 'bg-rose-900/60 text-white font-medium'
@@ -408,7 +446,10 @@ export const AddMediaModal: React.FC<AddMediaModalProps> = ({
                 <button
                   type="button"
                   disabled={isUploading}
-                  onClick={() => setSourceMode('url')}
+                  onClick={() => {
+                    setSourceMode('url');
+                    setError(null);
+                  }}
                   className={`px-2.5 py-1 rounded text-xs transition-colors ${
                     sourceMode === 'url'
                       ? 'bg-rose-900/60 text-white font-medium'
@@ -423,23 +464,20 @@ export const AddMediaModal: React.FC<AddMediaModalProps> = ({
             {/* Upload Input or URL Input */}
             {sourceMode === 'upload' ? (
               <div className="border-2 border-dashed border-rose-500/30 rounded-2xl p-4 text-center hover:border-rose-400/60 transition-colors bg-rose-950/30">
-                {selectedPreviews.length > 0 ? (
+                {selectedItems.length > 0 ? (
                   <div className="space-y-3">
                     <div className="flex items-center justify-between px-1 text-xs text-rose-300">
                       <span className="flex items-center gap-1 text-emerald-400 font-medium">
                         <CheckCircle2 className="w-4 h-4" />
                         <span>
-                          {selectedPreviews.length}{' '}
-                          {selectedPreviews.length === 1 ? 'file' : 'files'} selected
+                          {selectedItems.length}{' '}
+                          {selectedItems.length === 1 ? 'file' : 'files'} selected
                         </span>
                       </span>
                       <button
                         type="button"
                         disabled={isUploading}
-                        onClick={() => {
-                          setSelectedPreviews([]);
-                          setSelectedRawFiles([]);
-                        }}
+                        onClick={clearSelectedItems}
                         className="text-xs text-rose-400 hover:text-rose-200 underline"
                       >
                         Clear all
@@ -448,21 +486,21 @@ export const AddMediaModal: React.FC<AddMediaModalProps> = ({
 
                     {/* Multi-thumbnail preview grid */}
                     <div className="grid grid-cols-3 sm:grid-cols-4 gap-2 max-h-48 overflow-y-auto p-1">
-                      {selectedPreviews.map((preview, i) => (
+                      {selectedItems.map((preview, i) => (
                         <div
-                          key={i}
+                          key={preview.id}
                           className="relative aspect-square rounded-xl overflow-hidden bg-black/60 group border border-rose-500/20"
                         >
-                          {preview.url ? (
+                          {preview.previewUrl ? (
                             mediaType === 'photo' ? (
                               <img
-                                src={preview.url}
+                                src={preview.previewUrl}
                                 alt={`Preview ${i + 1}`}
                                 className="w-full h-full object-cover"
                               />
                             ) : (
                               <video
-                                src={preview.url}
+                                src={preview.previewUrl}
                                 muted
                                 playsInline
                                 className="w-full h-full object-cover"
@@ -632,8 +670,8 @@ export const AddMediaModal: React.FC<AddMediaModalProps> = ({
                     <Loader2 className="w-4 h-4 animate-spin" />
                     <span>{uploadStatus || 'Saving to cloud...'}</span>
                   </>
-                ) : selectedPreviews.length > 1 ? (
-                  <span>Save {selectedPreviews.length} Items to Cloud</span>
+                ) : selectedItems.length > 1 ? (
+                  <span>Save {selectedItems.length} Items to Cloud</span>
                 ) : (
                   <span>Save to Cloud Gallery</span>
                 )}

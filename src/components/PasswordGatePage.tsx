@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   KeyRound,
   Eye,
@@ -57,6 +57,9 @@ export const PasswordGatePage: React.FC<PasswordGatePageProps> = ({
     null
   );
 
+  const shakeTimerRef = useRef<number | null>(null);
+  const unlockTimerRef = useRef<number | null>(null);
+
   useEffect(() => {
     setHintInput(gateConfig.hint);
     setTitleInput(gateConfig.welcomeTitle);
@@ -69,6 +72,22 @@ export const PasswordGatePage: React.FC<PasswordGatePageProps> = ({
     }
   }, [initialOpenAdmin]);
 
+  useEffect(() => {
+    return () => {
+      if (shakeTimerRef.current !== null) window.clearTimeout(shakeTimerRef.current);
+      if (unlockTimerRef.current !== null) window.clearTimeout(unlockTimerRef.current);
+    };
+  }, []);
+
+  const triggerShake = () => {
+    setIsShaking(true);
+    if (shakeTimerRef.current !== null) window.clearTimeout(shakeTimerRef.current);
+    shakeTimerRef.current = window.setTimeout(() => {
+      setIsShaking(false);
+      shakeTimerRef.current = null;
+    }, 450);
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (isChecking || isUnlocking) return;
@@ -76,8 +95,7 @@ export const PasswordGatePage: React.FC<PasswordGatePageProps> = ({
     const trimmed = passwordInput.trim();
     if (!trimmed) {
       setErrorMessage('Please enter the secret password first.');
-      setIsShaking(true);
-      setTimeout(() => setIsShaking(false), 450);
+      triggerShake();
       return;
     }
 
@@ -88,14 +106,15 @@ export const PasswordGatePage: React.FC<PasswordGatePageProps> = ({
       const enteredHash = await hashGatePassword(trimmed);
       if (enteredHash === gateConfig.passwordHash) {
         setIsUnlocking(true);
-        setTimeout(() => {
+        if (unlockTimerRef.current !== null) window.clearTimeout(unlockTimerRef.current);
+        unlockTimerRef.current = window.setTimeout(() => {
+          unlockTimerRef.current = null;
           onUnlock();
         }, 550);
       } else {
         setShowHint(true);
         setErrorMessage("That's not quite it, my love — take a peek at the hint below ❤️");
-        setIsShaking(true);
-        setTimeout(() => setIsShaking(false), 450);
+        triggerShake();
       }
     } finally {
       setIsChecking(false);
