@@ -478,32 +478,47 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
     return () => window.clearTimeout(timer);
   }, [albumState, isAutoPlaying, filteredMemories.length, activeItem, paginate]);
 
+  const paginateRef = useRef(paginate);
+  paginateRef.current = paginate;
+  const isAutoPlayingRef = useRef(isAutoPlaying);
+  isAutoPlayingRef.current = isAutoPlaying;
+  const isEditingCaptionRef = useRef(isEditingCaption);
+  isEditingCaptionRef.current = isEditingCaption;
+  const lastKeyNavAtRef = useRef<number>(0);
+
   // Keyboard arrow navigation
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.defaultPrevented) return;
+      if (e.defaultPrevented || e.repeat) return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (isEditingCaptionRef.current) return;
       if (document.querySelector('[role="dialog"]')) return;
       const target = e.target as HTMLElement | null;
       if (
         target &&
         (target.tagName === 'INPUT' ||
           target.tagName === 'TEXTAREA' ||
-          target.tagName === 'SELECT')
+          target.tagName === 'SELECT' ||
+          target.isContentEditable)
       ) {
         return;
       }
-      if (e.key === 'ArrowLeft') {
+
+      if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+
+      const now = Date.now();
+      if (now - lastKeyNavAtRef.current < 120) return;
+      lastKeyNavAtRef.current = now;
+
+      e.preventDefault();
+      if (isAutoPlayingRef.current) {
         setIsAutoPlaying(false);
-        paginate(-1);
       }
-      if (e.key === 'ArrowRight') {
-        setIsAutoPlaying(false);
-        paginate(1);
-      }
+      paginateRef.current(e.key === 'ArrowLeft' ? -1 : 1);
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [paginate]);
+  }, []);
 
   // Keep active filmstrip thumbnail centered horizontally without scrolling the page vertically
   useEffect(() => {
