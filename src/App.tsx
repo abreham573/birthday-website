@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, lazy, Suspense } from 'react';
 import { onAuthStateChanged, User } from 'firebase/auth';
 import { Lock, AlertTriangle, ExternalLink, KeyRound } from 'lucide-react';
 import { TabType, MemoryItem, LoveLetterData, AccessGateConfig, SongConfig } from './types';
@@ -11,7 +11,6 @@ import { INITIAL_MEMORIES } from './data/initialMemories';
 import { DEFAULT_LOVE_LETTER } from './data/defaultLetter';
 import {
   auth,
-  connectionCheckPromise,
   isFirestoreQuotaLocked,
   isOwnerUser,
   lockFirestoreForQuota,
@@ -41,12 +40,23 @@ import {
 import { BackgroundEffects } from './components/BackgroundEffects';
 import { PasswordGatePage } from './components/PasswordGatePage';
 import { Navbar } from './components/Navbar';
-import { MemoriesPage } from './components/MemoriesPage';
-import { LoveLetterPage } from './components/LoveLetterPage';
-import { SongPage } from './components/SongPage';
-import { AddMediaModal } from './components/AddMediaModal';
-import { LightboxModal } from './components/LightboxModal';
 import { useHeartTapEffect } from './components/HeartTapEffect';
+
+const MemoriesPage = lazy(() =>
+  import('./components/MemoriesPage').then((m) => ({ default: m.MemoriesPage }))
+);
+const LoveLetterPage = lazy(() =>
+  import('./components/LoveLetterPage').then((m) => ({ default: m.LoveLetterPage }))
+);
+const SongPage = lazy(() =>
+  import('./components/SongPage').then((m) => ({ default: m.SongPage }))
+);
+const AddMediaModal = lazy(() =>
+  import('./components/AddMediaModal').then((m) => ({ default: m.AddMediaModal }))
+);
+const LightboxModal = lazy(() =>
+  import('./components/LightboxModal').then((m) => ({ default: m.LightboxModal }))
+);
 
 const UNLOCK_STORAGE_KEY = 'tsi_birthday_unlocked';
 
@@ -102,9 +112,19 @@ export default function App() {
 
   const readQuotaHitRef = useRef<boolean>(false);
   const gateSyncPromiseRef = useRef<Promise<void>>(Promise.resolve());
+  const gateConfigRef = useRef<AccessGateConfig>(gateConfig);
+  gateConfigRef.current = gateConfig;
   const hasFreshCloudGateRef = useRef<boolean>(false);
   const hasFreshCloudLetterRef = useRef<boolean>(false);
   const hasFreshCloudSongRef = useRef<boolean>(false);
+
+  // Warm the album module silently after initial paint so unlocking opens instantaneously
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void import('./components/MemoriesPage');
+    }, 150);
+    return () => window.clearTimeout(timer);
+  }, []);
 
   // Warm gate, memories, letter, and song immediately from IndexedDB cache on mount (0 Firestore reads!)
   useEffect(() => {
@@ -143,15 +163,12 @@ export default function App() {
     };
   }, []);
 
-  // Refresh Front-Page Password Gate config from Firestore on mount
+  // Refresh Front-Page Password Gate config from Firestore on mount (without blocking on testConnection)
   useEffect(() => {
     let active = true;
 
     async function loadGateConfig() {
       try {
-        await connectionCheckPromise;
-        if (!active) return;
-
         if (isFirestoreQuotaLocked()) {
           readQuotaHitRef.current = true;
           setQuotaExceeded(true);
@@ -201,17 +218,37 @@ export default function App() {
 
     async function syncMemories() {
       try {
-        await gateSyncPromiseRef.current;
-        if (!active) return;
-
         if (isFirestoreQuotaLocked()) {
           readQuotaHitRef.current = true;
           setQuotaExceeded(true);
         }
 
+        const applyBatchToState = (batchItems: MemoryItem[]) => {
+          if (!active) return;
+          setMemories((prev) => {
+            const prevUrlById = new Map(
+              prev.filter((m) => Boolean(m.url)).map((m) => [m.id, m.url])
+            );
+            const batchIds = new Set(batchItems.map((m) => m.id));
+            const mergedBatch = batchItems.map((item) => {
+              const existingUrl = prevUrlById.get(item.id);
+              if (existingUrl && !item.url) {
+                return { ...item, url: existingUrl };
+              }
+              return item;
+            });
+            // Preserve any extra cached trailing items until the full cloud fetch finishes
+            const remainingPrev = prev.filter((m) => !batchIds.has(m.id));
+            return [...mergedBatch, ...remainingPrev];
+          });
+          setIsLoadingMemories(false);
+        };
+
         const cloudMemories = readQuotaHitRef.current
           ? null
-          : await fetchMemoriesFromFirestore().catch((err) => {
+          : await fetchMemoriesFromFirestore({
+              onPartialBatch: applyBatchToState,
+            }).catch((err) => {
               if (isQuotaExceededError(err)) {
                 readQuotaHitRef.current = true;
                 setQuotaExceeded(true);
@@ -246,27 +283,46 @@ export default function App() {
 
           if (readQuotaHitRef.current) return;
 
-          // Progressively load any uncached chunked photos in the background (cover photo first)
+          // Progressively load uncached chunked photos (batches of 3) first, then uncached chunked videos
+          // so videos are already cached & ready to play without forcing a tap to load!
           const pendingChunkedPhotos = resolvedMemories.filter(
             (m) => m.type === 'photo' && m.isChunked && !m.url
           );
-          if (pendingChunkedPhotos.length > 0) {
-            for (let i = 0; i < pendingChunkedPhotos.length; i += 3) {
-              if (!active || readQuotaHitRef.current) break;
-              const slice = pendingChunkedPhotos.slice(i, i + 3);
-              const results = await Promise.allSettled(
-                slice.map(async (photo) => {
-                  const url = await resolveChunkedMemoryUrl(photo.id);
-                  if (!active || !url) return;
-                  setMemories((prev) =>
-                    prev.map((m) => (m.id === photo.id && !m.url ? { ...m, url } : m))
-                  );
-                })
+          for (let i = 0; i < pendingChunkedPhotos.length; i += 3) {
+            if (!active || readQuotaHitRef.current) break;
+            const slice = pendingChunkedPhotos.slice(i, i + 3);
+            const results = await Promise.allSettled(
+              slice.map(async (photo) => {
+                const url = await resolveChunkedMemoryUrl(photo.id);
+                if (!active || !url) return;
+                setMemories((prev) =>
+                  prev.map((m) => (m.id === photo.id && !m.url ? { ...m, url } : m))
+                );
+              })
+            );
+            const hitQuota = results.some(
+              (r) => r.status === 'rejected' && isQuotaExceededError(r.reason)
+            );
+            if (hitQuota) {
+              readQuotaHitRef.current = true;
+              if (active) setQuotaExceeded(true);
+              break;
+            }
+          }
+
+          const pendingChunkedVideos = resolvedMemories.filter(
+            (m) => m.type === 'video' && m.isChunked && !m.url
+          );
+          for (const video of pendingChunkedVideos) {
+            if (!active || readQuotaHitRef.current) break;
+            try {
+              const url = await resolveChunkedMemoryUrl(video.id);
+              if (!active || !url) continue;
+              setMemories((prev) =>
+                prev.map((m) => (m.id === video.id && !m.url ? { ...m, url } : m))
               );
-              const hitQuota = results.some(
-                (r) => r.status === 'rejected' && isQuotaExceededError(r.reason)
-              );
-              if (hitQuota) {
+            } catch (videoErr) {
+              if (isQuotaExceededError(videoErr)) {
                 readQuotaHitRef.current = true;
                 if (active) setQuotaExceeded(true);
                 break;
@@ -282,9 +338,6 @@ export default function App() {
     }
 
     async function syncLetter() {
-      await gateSyncPromiseRef.current;
-      if (!active) return;
-
       if (isFirestoreQuotaLocked()) {
         readQuotaHitRef.current = true;
         setQuotaExceeded(true);
@@ -310,9 +363,6 @@ export default function App() {
     }
 
     async function syncSong() {
-      await gateSyncPromiseRef.current;
-      if (!active) return;
-
       if (isFirestoreQuotaLocked()) {
         readQuotaHitRef.current = true;
         setQuotaExceeded(true);
@@ -566,10 +616,26 @@ export default function App() {
       hasLoadedCloudRef.current = false;
       setQuotaExceeded(false);
       await unlockFirestoreForRetry();
-      const cloudGate = await fetchGateConfigFromFirestore();
+      const [cloudGate, cloudMemories, cloudLetter, cloudSong] = await Promise.all([
+        fetchGateConfigFromFirestore({ forceRefresh: true }),
+        fetchMemoriesFromFirestore({ forceRefresh: true }),
+        fetchLetterFromFirestore({ forceRefresh: true }),
+        fetchSongConfigFromFirestore({ forceRefresh: true }),
+      ]);
       if (cloudGate) {
         hasFreshCloudGateRef.current = true;
         setGateConfig(cloudGate);
+      }
+      if (cloudMemories) {
+        setMemories(cloudMemories);
+      }
+      if (cloudLetter) {
+        hasFreshCloudLetterRef.current = true;
+        setLetterData(cloudLetter);
+      }
+      if (cloudSong) {
+        hasFreshCloudSongRef.current = true;
+        setSongConfig(cloudSong);
       }
     } catch (err) {
       if (isQuotaExceededError(err)) {
@@ -615,6 +681,10 @@ export default function App() {
             isLoadingGate={isLoadingGate}
             isOwner={isOwner}
             onUnlock={handleUnlock}
+            onEnsureGateReady={async () => {
+              await gateSyncPromiseRef.current;
+              return gateConfigRef.current;
+            }}
             onSignInOwner={handleSignInOwner}
             onSaveGateConfig={handleSaveGateConfig}
             initialOpenAdmin={adminRequested}
@@ -671,69 +741,83 @@ export default function App() {
               </div>
             )}
 
-            {activeTab === 'memories' && (
-              <MemoriesPage
-                memories={memories}
-                isLoading={isLoadingMemories}
-                isOwner={isOwner}
-                onOpenAddModal={() => setIsAddModalOpen(true)}
-                onSelectMemory={(item) => setSelectedLightboxItem(item)}
-                onResolveMedia={handleResolveMedia}
-                onUpdateMemory={handleUpdateMemory}
-                onNavigateToLetter={() => handleSelectTab('letter')}
-                onNavigateToSong={() => handleSelectTab('song')}
-              />
-            )}
+            <Suspense
+              fallback={
+                <div className="max-w-4xl mx-auto px-4 sm:px-6 pt-8">
+                  <div className="h-[440px] rounded-3xl romantic-card animate-pulse" />
+                </div>
+              }
+            >
+              {activeTab === 'memories' && (
+                <MemoriesPage
+                  memories={memories}
+                  isLoading={isLoadingMemories}
+                  isOwner={isOwner}
+                  onOpenAddModal={() => setIsAddModalOpen(true)}
+                  onSelectMemory={(item) => setSelectedLightboxItem(item)}
+                  onResolveMedia={handleResolveMedia}
+                  onUpdateMemory={handleUpdateMemory}
+                  onNavigateToLetter={() => handleSelectTab('letter')}
+                  onNavigateToSong={() => handleSelectTab('song')}
+                />
+              )}
 
-            {activeTab === 'letter' && (
-              <LoveLetterPage
-                letterData={letterData}
-                isOwner={isOwner}
-                onSignInOwner={handleSignInOwner}
-                onUpdateLetter={handleUpdateLetter}
-                onHeartTap={triggerHeartBurst}
-                tapCount={tapCount}
-                onNavigateToMemories={() => handleSelectTab('memories')}
-                onNavigateToSong={() => handleSelectTab('song')}
-              />
-            )}
+              {activeTab === 'letter' && (
+                <LoveLetterPage
+                  letterData={letterData}
+                  isOwner={isOwner}
+                  onSignInOwner={handleSignInOwner}
+                  onUpdateLetter={handleUpdateLetter}
+                  onHeartTap={triggerHeartBurst}
+                  tapCount={tapCount}
+                  onNavigateToMemories={() => handleSelectTab('memories')}
+                  onNavigateToSong={() => handleSelectTab('song')}
+                />
+              )}
 
-            {activeTab === 'song' && (
-              <SongPage
-                songConfig={songConfig}
-                albumPhotos={memories.filter((m) => m.type === 'photo' && Boolean(m.url))}
-                isOwner={isOwner}
-                onSignInOwner={handleSignInOwner}
-                onUpdateSong={handleUpdateSong}
-                onNavigateToMemories={() => handleSelectTab('memories')}
-                onNavigateToLetter={() => handleSelectTab('letter')}
-              />
-            )}
+              {activeTab === 'song' && (
+                <SongPage
+                  songConfig={songConfig}
+                  albumPhotos={memories.filter((m) => m.type === 'photo' && Boolean(m.url))}
+                  isOwner={isOwner}
+                  onSignInOwner={handleSignInOwner}
+                  onUpdateSong={handleUpdateSong}
+                  onNavigateToMemories={() => handleSelectTab('memories')}
+                  onNavigateToLetter={() => handleSelectTab('letter')}
+                />
+              )}
+            </Suspense>
           </main>
 
-          {/* Fullscreen Lightbox Modal */}
-          <LightboxModal
-            item={selectedLightboxItem}
-            items={memories}
-            isOwner={isOwner}
-            onClose={() => setSelectedLightboxItem(null)}
-            onSelect={(item) => setSelectedLightboxItem(item)}
-            onDelete={handleDeleteMemory}
-            onResolveMedia={handleResolveMedia}
-          />
+          <Suspense fallback={null}>
+            {/* Fullscreen Lightbox Modal */}
+            {selectedLightboxItem && (
+              <LightboxModal
+                item={selectedLightboxItem}
+                items={memories}
+                isOwner={isOwner}
+                onClose={() => setSelectedLightboxItem(null)}
+                onSelect={(item) => setSelectedLightboxItem(item)}
+                onDelete={handleDeleteMemory}
+                onResolveMedia={handleResolveMedia}
+              />
+            )}
 
-          {/* Add Photo or Video Modal */}
-          <AddMediaModal
-            isOpen={isAddModalOpen}
-            onClose={() => setIsAddModalOpen(false)}
-            onAdd={handleAddMemory}
-            onAddMultiple={handleAddMultipleMemories}
-            onQuotaExceeded={() => setQuotaExceeded(true)}
-            user={user}
-            isOwner={isOwner}
-            onSignInOwner={handleSignInOwner}
-            onSignOutOwner={handleSignOutOwner}
-          />
+            {/* Add Photo or Video Modal */}
+            {isAddModalOpen && (
+              <AddMediaModal
+                isOpen={isAddModalOpen}
+                onClose={() => setIsAddModalOpen(false)}
+                onAdd={handleAddMemory}
+                onAddMultiple={handleAddMultipleMemories}
+                onQuotaExceeded={() => setQuotaExceeded(true)}
+                user={user}
+                isOwner={isOwner}
+                onSignInOwner={handleSignInOwner}
+                onSignOutOwner={handleSignOutOwner}
+              />
+            )}
+          </Suspense>
 
           {/* Footer */}
           <footer className="relative z-10 border-t border-rose-500/15 py-8 text-center text-xs text-rose-300/60 pb-24 md:pb-8">

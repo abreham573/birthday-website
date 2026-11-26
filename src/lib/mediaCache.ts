@@ -220,3 +220,34 @@ export async function saveCachedSongConfig(song: SongConfig): Promise<void> {
     // Ignore
   }
 }
+
+export async function getCacheTimestamp(key: string): Promise<number | null> {
+  try {
+    const db = await openCacheDb();
+    return await new Promise((resolve) => {
+      const tx = db.transaction(META_STORE, 'readonly');
+      const req = tx.objectStore(META_STORE).get(`ts_${key}`);
+      req.onsuccess = () => {
+        resolve(typeof req.result === 'number' ? req.result : null);
+      };
+      req.onerror = () => resolve(null);
+    });
+  } catch {
+    return null;
+  }
+}
+
+export async function setCacheTimestamp(key: string, ts = Date.now()): Promise<void> {
+  try {
+    const db = await openCacheDb();
+    await new Promise<void>((resolve) => {
+      const tx = db.transaction(META_STORE, 'readwrite');
+      tx.objectStore(META_STORE).put(ts, `ts_${key}`);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => resolve();
+      tx.onabort = () => resolve();
+    });
+  } catch {
+    // Ignore
+  }
+}

@@ -79,8 +79,14 @@ async function startServer() {
   app.use(express.json({ limit: '50mb' }));
   app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-  // Serve uploaded files statically so anyone opening the site (Tsi on her phone) can view them!
-  app.use('/uploads', express.static(UPLOADS_DIR));
+  // Serve uploaded files statically with long cache lifetime for phones
+  app.use(
+    '/uploads',
+    express.static(UPLOADS_DIR, {
+      maxAge: '7d',
+      etag: true,
+    })
+  );
 
   // GET /api/memories: returns all server-saved photos & videos
   app.get('/api/memories', (req, res) => {
@@ -199,10 +205,27 @@ async function startServer() {
     });
     app.use(vite.middlewares);
   } else {
-    // Serve static files from dist
+    // Serve static files from dist with aggressive caching for hashed assets and no-cache for HTML
     const distPath = path.resolve(__dirname, 'dist');
-    app.use(express.static(distPath));
+    app.use(
+      '/assets',
+      express.static(path.resolve(distPath, 'assets'), {
+        maxAge: '30d',
+        immutable: true,
+      })
+    );
+    app.use(
+      express.static(distPath, {
+        maxAge: '1h',
+        setHeaders: (res, filePath) => {
+          if (filePath.endsWith('index.html')) {
+            res.setHeader('Cache-Control', 'no-cache');
+          }
+        },
+      })
+    );
     app.get('*', (req, res) => {
+      res.setHeader('Cache-Control', 'no-cache');
       res.sendFile(path.resolve(distPath, 'index.html'));
     });
   }

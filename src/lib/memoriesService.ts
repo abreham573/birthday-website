@@ -17,7 +17,6 @@ import {
   writeBatch,
 } from 'firebase/firestore';
 import {
-  connectionCheckPromise,
   db,
   handleFirestoreError,
   isFirestoreQuotaLocked,
@@ -30,14 +29,24 @@ import {
   getCachedMediaBlob,
   getCachedMemoriesList,
   getCachedSongConfig,
+  getCacheTimestamp,
   saveCachedGateConfig,
   saveCachedLetter,
   saveCachedMediaBlob,
   saveCachedMemoriesList,
   saveCachedSongConfig,
+  setCacheTimestamp,
 } from './mediaCache';
+
 import { AccessGateConfig, LoveLetterData, MemoryItem, SongConfig } from '../types';
 import { DEFAULT_LOVE_LETTER } from '../data/defaultLetter';
+
+const METADATA_CACHE_TTL_MS = 60 * 1000;
+
+async function isCacheFresh(key: string): Promise<boolean> {
+  const ts = await getCacheTimestamp(key);
+  return ts !== null && Date.now() - ts < METADATA_CACHE_TTL_MS;
+}
 
 const CHUNK_SIZE = 650000;
 const MAX_CHUNKS = 40;
@@ -216,7 +225,7 @@ async function compressImageFile(file: File): Promise<{ dataUrl: string; mimeTyp
     img.onload = async () => {
       URL.revokeObjectURL(objectUrl);
       try {
-        const maxDim = 1200;
+        const maxDim = 1080;
         let { width, height } = img;
         if (width > maxDim || height > maxDim) {
           if (width > height) {
@@ -240,18 +249,18 @@ async function compressImageFile(file: File): Promise<{ dataUrl: string; mimeTyp
 
         ctx.drawImage(img, 0, 0, width, height);
 
-        let quality = 0.78;
+        let quality = 0.72;
         let output = canvas.toDataURL('image/jpeg', quality);
-        if (output.length > 420000) {
-          quality = 0.66;
+        if (output.length > 280000) {
+          quality = 0.58;
           output = canvas.toDataURL('image/jpeg', quality);
         }
-        if (output.length > 650000) {
-          const scale = 0.75;
+        if (output.length > 480000) {
+          const scale = 0.78;
           canvas.width = Math.round(width * scale);
           canvas.height = Math.round(height * scale);
           ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-          output = canvas.toDataURL('image/jpeg', 0.68);
+          output = canvas.toDataURL('image/jpeg', 0.62);
         }
 
         resolve({ dataUrl: output, mimeType: 'image/jpeg' });
@@ -560,7 +569,6 @@ export async function resolveChunkedMemoryUrl(
     }
 
     // 2. Fetch immutable chunks from Firestore once and cache locally
-    await connectionCheckPromise;
     if (
       isFirestoreQuotaLocked() ||
       (typeof navigator !== 'undefined' && navigator.onLine === false)
@@ -600,85 +608,104 @@ export async function resolveChunkedMemoryUrl(
   return task;
 }
 
-export async function fetchMemoriesFromFirestore(): Promise<MemoryItem[]> {
+async function resolveMemorySnapshotDocs(
+  docs: QueryDocumentSnapshot<DocumentData>[]
+): Promise<MemoryItem[]> {
+  const resolvedItems = await Promise.all(
+    docs.map(async (docSnap): Promise<MemoryItem | null> => {
+      const data = docSnap.data();
+      const mediaType: 'photo' | 'video' = data.type === 'video' ? 'video' : 'photo';
+      const isChunked = Boolean(data.isChunked);
+      let resolvedUrl: string = typeof data.url === 'string' ? data.url : '';
+
+      if (isChunked) {
+        const existingUrl = resolvedObjectUrlMap.get(docSnap.id);
+        if (existingUrl) {
+          resolvedUrl = existingUrl;
+        } else {
+          const cachedBlob = await getCachedMediaBlob(docSnap.id);
+          if (cachedBlob) {
+            resolvedUrl = getOrCreateObjectUrl(docSnap.id, cachedBlob);
+          }
+        }
+      }
+
+      if (!resolvedUrl && !isChunked) {
+        return null;
+      }
+
+      return {
+        id: docSnap.id,
+        type: mediaType,
+        url: resolvedUrl,
+        title: data.title || 'Tsi',
+        caption: data.caption || '',
+        date: data.date || '',
+        tag: data.tag || '',
+        aspectRatio: data.aspectRatio || (mediaType === 'video' ? '16:9' : '4:3'),
+        isCustom: true,
+        isChunked,
+      };
+    })
+  );
+
+  return resolvedItems.filter((item): item is MemoryItem => item !== null);
+}
+
+export async function fetchMemoriesFromFirestore(options?: {
+  onPartialBatch?: (items: MemoryItem[]) => void;
+  forceRefresh?: boolean;
+}): Promise<MemoryItem[]> {
   const path = 'memories';
-  const PAGE_SIZE = 100;
-  await connectionCheckPromise;
+  const FIRST_PAGE_SIZE = 6;
+  const NEXT_PAGE_SIZE = 10;
   if (
     isFirestoreQuotaLocked() ||
     (typeof navigator !== 'undefined' && navigator.onLine === false)
   ) {
     return getCachedMemoriesFallback();
   }
+  if (!options?.forceRefresh && (await isCacheFresh('memories'))) {
+    const cached = await getCachedMemoriesFallback();
+    if (cached.length > 0) {
+      return cached;
+    }
+  }
   try {
-    const allDocs: QueryDocumentSnapshot<DocumentData>[] = [];
+    const accumulatedItems: MemoryItem[] = [];
     let lastDoc: QueryDocumentSnapshot<DocumentData> | null = null;
+    let isFirstPage = true;
 
     while (true) {
+      const pageLimit = isFirstPage ? FIRST_PAGE_SIZE : NEXT_PAGE_SIZE;
       const q: Query<DocumentData> = lastDoc
         ? query(
             collection(db, path),
             orderBy('createdAt', 'desc'),
             startAfter(lastDoc),
-            limit(PAGE_SIZE)
+            limit(pageLimit)
           )
         : query(
             collection(db, path),
             orderBy('createdAt', 'desc'),
-            limit(PAGE_SIZE)
+            limit(pageLimit)
           );
       const snapshot: QuerySnapshot<DocumentData> = await getDocs(q);
       if (snapshot.empty) break;
-      allDocs.push(...snapshot.docs);
-      if (snapshot.docs.length < PAGE_SIZE) break;
+
+      const batchItems = await resolveMemorySnapshotDocs(snapshot.docs);
+      accumulatedItems.push(...batchItems);
+      options?.onPartialBatch?.([...accumulatedItems]);
+
+      if (snapshot.docs.length < pageLimit) break;
       lastDoc = snapshot.docs[snapshot.docs.length - 1];
+      isFirstPage = false;
     }
 
-    // Resolve cached blobs in parallel and return immediately without blocking on
-    // uncached chunked photo subcollections (those load progressively afterwards).
-    const resolvedItems = await Promise.all(
-      allDocs.map(async (docSnap): Promise<MemoryItem | null> => {
-        const data = docSnap.data();
-        const mediaType: 'photo' | 'video' = data.type === 'video' ? 'video' : 'photo';
-        const isChunked = Boolean(data.isChunked);
-        let resolvedUrl: string = typeof data.url === 'string' ? data.url : '';
-
-        if (isChunked) {
-          const existingUrl = resolvedObjectUrlMap.get(docSnap.id);
-          if (existingUrl) {
-            resolvedUrl = existingUrl;
-          } else {
-            const cachedBlob = await getCachedMediaBlob(docSnap.id);
-            if (cachedBlob) {
-              resolvedUrl = getOrCreateObjectUrl(docSnap.id, cachedBlob);
-            }
-          }
-        }
-
-        if (!resolvedUrl && !isChunked) {
-          return null;
-        }
-
-        return {
-          id: docSnap.id,
-          type: mediaType,
-          url: resolvedUrl,
-          title: data.title || 'Tsi',
-          caption: data.caption || '',
-          date: data.date || '',
-          tag: data.tag || '',
-          aspectRatio: data.aspectRatio || (mediaType === 'video' ? '16:9' : '4:3'),
-          isCustom: true,
-          isChunked,
-        };
-      })
-    );
-
-    const items = resolvedItems.filter((item): item is MemoryItem => item !== null);
-
     // Persist metadata fallback asynchronously without delaying gallery render
-    void saveCachedMemoriesList(items);
-    return items;
+    void saveCachedMemoriesList(accumulatedItems);
+    void setCacheTimestamp('memories');
+    return accumulatedItems;
   } catch (error) {
     if (isOfflineError(error)) {
       return getCachedMemoriesFallback();
@@ -783,14 +810,19 @@ export async function updateMemoryMetadataInFirestore(params: {
   }
 }
 
-export async function fetchLetterFromFirestore(): Promise<LoveLetterData | null> {
+export async function fetchLetterFromFirestore(options?: {
+  forceRefresh?: boolean;
+}): Promise<LoveLetterData | null> {
   const path = 'letter/birthday';
-  await connectionCheckPromise;
   if (
     isFirestoreQuotaLocked() ||
     (typeof navigator !== 'undefined' && navigator.onLine === false)
   ) {
     return getCachedLetterFallback();
+  }
+  if (!options?.forceRefresh && (await isCacheFresh('letter'))) {
+    const cached = await getCachedLetterFallback();
+    if (cached) return cached;
   }
   try {
     const snap = await getDoc(doc(db, 'letter', 'birthday'));
@@ -814,6 +846,7 @@ export async function fetchLetterFromFirestore(): Promise<LoveLetterData | null>
           : DEFAULT_LOVE_LETTER.bottomPhotoCaption,
     };
     await saveCachedLetter(letter);
+    await setCacheTimestamp('letter');
     return letter;
   } catch (error) {
     if (isOfflineError(error)) {
@@ -1015,14 +1048,19 @@ export async function hashGatePassword(rawPassword: string): Promise<string> {
   return fallbackSha256Hex(normalized);
 }
 
-export async function fetchGateConfigFromFirestore(): Promise<AccessGateConfig | null> {
+export async function fetchGateConfigFromFirestore(options?: {
+  forceRefresh?: boolean;
+}): Promise<AccessGateConfig | null> {
   const path = 'gate/config';
-  await connectionCheckPromise;
   if (
     isFirestoreQuotaLocked() ||
     (typeof navigator !== 'undefined' && navigator.onLine === false)
   ) {
     return getCachedGateConfigFallback();
+  }
+  if (!options?.forceRefresh && (await isCacheFresh('gate'))) {
+    const cached = await getCachedGateConfigFallback();
+    if (cached) return cached;
   }
   try {
     const snap = await getDoc(doc(db, 'gate', 'config'));
@@ -1047,6 +1085,7 @@ export async function fetchGateConfigFromFirestore(): Promise<AccessGateConfig |
           : DEFAULT_GATE_CONFIG.welcomeSubtitle,
     };
     await saveCachedGateConfig(config);
+    await setCacheTimestamp('gate');
     return config;
   } catch (error) {
     if (isOfflineError(error)) {
@@ -1141,14 +1180,19 @@ export const DEFAULT_SONG_CONFIG: SongConfig = {
   coverPhotoUrl: '',
 };
 
-export async function fetchSongConfigFromFirestore(): Promise<SongConfig | null> {
+export async function fetchSongConfigFromFirestore(options?: {
+  forceRefresh?: boolean;
+}): Promise<SongConfig | null> {
   const path = 'song/config';
-  await connectionCheckPromise;
   if (
     isFirestoreQuotaLocked() ||
     (typeof navigator !== 'undefined' && navigator.onLine === false)
   ) {
     return getCachedSongConfigFallback();
+  }
+  if (!options?.forceRefresh && (await isCacheFresh('song'))) {
+    const cached = await getCachedSongConfigFallback();
+    if (cached) return cached;
   }
   try {
     const snap = await getDoc(doc(db, 'song', 'config'));
@@ -1185,6 +1229,7 @@ export async function fetchSongConfigFromFirestore(): Promise<SongConfig | null>
         typeof data.coverPhotoUrl === 'string' ? data.coverPhotoUrl : '',
     };
     await saveCachedSongConfig(song);
+    await setCacheTimestamp('song');
     return song;
   } catch (error) {
     if (isOfflineError(error)) {

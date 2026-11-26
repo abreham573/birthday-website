@@ -317,6 +317,7 @@ export const LightboxModal: React.FC<LightboxModalProps> = ({
               controls
               autoPlay
               playsInline
+              preload="auto"
               onError={() => setMediaError('Video could not be played right now.')}
               className={`object-contain mx-auto ${
                 isExpanded

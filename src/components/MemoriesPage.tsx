@@ -136,21 +136,46 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
     setCaptionSaveError(null);
   }, [activeItem?.id, albumState]);
 
-  // If user flips to an uncached chunked photo before background fetch reaches it, resolve it immediately
+  // Auto-resolve the active chunked photo OR video immediately without requiring an extra tap
   useEffect(() => {
     if (
       albumState === 'pages' &&
       activeItem &&
-      activeItem.type === 'photo' &&
       activeItem.isChunked &&
       !activeItem.url &&
-      onResolveMedia
+      onResolveMedia &&
+      !videoError
     ) {
-      void onResolveMedia(activeItem.id).catch(() => {});
-    }
-  }, [albumState, activeItem, onResolveMedia]);
+      let cancelled = false;
+      if (activeItem.type === 'video') {
+        setLoadingVideoId(activeItem.id);
+      }
+      void onResolveMedia(activeItem.id)
+        .then((url) => {
+          if (!cancelled && !url && activeItem.type === 'video') {
+            setVideoError('Video could not be loaded right now.');
+          }
+        })
+        .catch((err) => {
+          if (!cancelled && activeItem.type === 'video') {
+            setVideoError(
+              getReadableFirestoreErrorMessage(err, 'Could not load video right now.')
+            );
+          }
+        })
+        .finally(() => {
+          if (!cancelled) {
+            setLoadingVideoId((prev) => (prev === activeItem.id ? null : prev));
+          }
+        });
 
-  // Preload upcoming page images so turning pages renders instantaneously
+      return () => {
+        cancelled = true;
+      };
+    }
+  }, [albumState, activeItem, onResolveMedia, videoError]);
+
+  // Preload upcoming page images and chunked media (including videos) so turning pages is instant
   useEffect(() => {
     if (filteredMemories.length === 0) return;
     const indicesToPreload =
@@ -160,13 +185,16 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
 
     indicesToPreload.forEach((idx) => {
       const candidate = filteredMemories[idx];
-      if (candidate?.type === 'photo' && candidate.url) {
+      if (!candidate) return;
+      if (candidate.type === 'photo' && candidate.url) {
         const img = new Image();
         img.decoding = 'async';
         img.src = candidate.url;
+      } else if (candidate.isChunked && !candidate.url && onResolveMedia) {
+        void onResolveMedia(candidate.id).catch(() => {});
       }
     });
-  }, [albumState, currentIndex, filteredMemories]);
+  }, [albumState, currentIndex, filteredMemories, onResolveMedia]);
 
   /**
    * Commit any in-progress page flip immediately if a new flip is triggered rapidly,
@@ -1281,6 +1309,7 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
                               src={activeItem.url}
                               controls
                               playsInline
+                              preload="auto"
                               onTouchStart={(e) => e.stopPropagation()}
                               onPointerDown={(e) => e.stopPropagation()}
                               onPlay={() => setIsAutoPlaying(false)}
@@ -1288,12 +1317,7 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
                             />
                         ) : (
                           <div className="w-full h-full rounded-sm bg-[#1b0409] flex flex-col items-center justify-center p-6 text-center space-y-3">
-                            {loadingVideoId === activeItem.id ? (
-                              <>
-                                <Loader2 className="w-9 h-9 animate-spin text-rose-400" />
-                                <p className="text-xs text-rose-200/80">Loading video memory...</p>
-                              </>
-                            ) : (
+                            {videoError ? (
                               <>
                                 <button
                                   type="button"
@@ -1304,12 +1328,21 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
                                     handleLoadInlineVideo(activeItem);
                                   }}
                                   className="w-16 h-16 rounded-full bg-rose-600/90 hover:bg-rose-500 text-white flex items-center justify-center shadow-xl transition-transform hover:scale-105 cursor-pointer"
-                                  aria-label="Play Video"
+                                  aria-label="Retry Video"
                                 >
                                   <Play className="w-7 h-7 fill-current ml-0.5" />
                                 </button>
                                 <p className="text-xs text-rose-200/85 font-medium">
-                                  {videoError ? videoError : 'Tap to Play Video'}
+                                  {videoError} — Tap to Retry
+                                </p>
+                              </>
+                            ) : (
+                              <>
+                                <Loader2 className="w-9 h-9 animate-spin text-rose-400" />
+                                <p className="text-xs text-rose-200/80">
+                                  {loadingVideoId === activeItem.id || activeItem.isChunked
+                                    ? 'Loading video...'
+                                    : 'Video unavailable right now.'}
                                 </p>
                               </>
                             )}

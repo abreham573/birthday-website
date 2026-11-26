@@ -19,6 +19,7 @@ interface PasswordGatePageProps {
   isLoadingGate: boolean;
   isOwner: boolean;
   onUnlock: () => void;
+  onEnsureGateReady?: () => Promise<AccessGateConfig>;
   onSignInOwner: () => Promise<void>;
   onSaveGateConfig: (params: {
     newPassword?: string;
@@ -31,9 +32,9 @@ interface PasswordGatePageProps {
 
 export const PasswordGatePage: React.FC<PasswordGatePageProps> = ({
   gateConfig,
-  isLoadingGate,
   isOwner,
   onUnlock,
+  onEnsureGateReady,
   onSignInOwner,
   onSaveGateConfig,
   initialOpenAdmin = false,
@@ -103,14 +104,17 @@ export const PasswordGatePage: React.FC<PasswordGatePageProps> = ({
     setErrorMessage(null);
 
     try {
-      const enteredHash = await hashGatePassword(trimmed);
-      if (enteredHash === gateConfig.passwordHash) {
+      const [enteredHash, activeGate] = await Promise.all([
+        hashGatePassword(trimmed),
+        onEnsureGateReady ? onEnsureGateReady() : Promise.resolve(gateConfig),
+      ]);
+      if (enteredHash === activeGate.passwordHash) {
         setIsUnlocking(true);
         if (unlockTimerRef.current !== null) window.clearTimeout(unlockTimerRef.current);
         unlockTimerRef.current = window.setTimeout(() => {
           unlockTimerRef.current = null;
           onUnlock();
-        }, 550);
+        }, 420);
       } else {
         setShowHint(true);
         setErrorMessage("That's not quite it, my love — take a peek at the hint below ❤️");
@@ -209,7 +213,7 @@ export const PasswordGatePage: React.FC<PasswordGatePageProps> = ({
                   autoComplete="off"
                   autoCapitalize="none"
                   placeholder="Type our secret password..."
-                  disabled={isLoadingGate || isUnlocking}
+                  disabled={isUnlocking}
                   className="w-full min-h-[48px] bg-black/45 border border-rose-500/30 focus:border-rose-400 rounded-xl pl-10 pr-12 py-3 text-sm text-white placeholder:text-rose-300/40 focus:outline-none transition-colors"
                 />
                 <button
@@ -259,13 +263,13 @@ export const PasswordGatePage: React.FC<PasswordGatePageProps> = ({
             {/* Primary Unlock CTA */}
             <button
               type="submit"
-              disabled={isLoadingGate || isChecking || isUnlocking}
+              disabled={isChecking || isUnlocking}
               className="w-full min-h-[48px] px-5 py-3 bg-gradient-to-r from-rose-600 to-red-700 hover:from-rose-500 hover:to-red-600 active:scale-[0.99] text-white rounded-xl text-sm font-semibold shadow-lg shadow-rose-950/60 flex items-center justify-center gap-2 transition-all whitespace-nowrap cursor-pointer disabled:opacity-60"
             >
-              {isLoadingGate || isChecking ? (
+              {isChecking ? (
                 <>
                   <Loader2 className="w-4 h-4 animate-spin" />
-                  <span>{isLoadingGate ? 'Preparing Surprise...' : 'Checking...'}</span>
+                  <span>Checking...</span>
                 </>
               ) : isUnlocking ? (
                 <>

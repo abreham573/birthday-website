@@ -3,13 +3,13 @@ import React, { useMemo } from 'react';
 export const BackgroundEffects: React.FC = () => {
   // Generate random petals with varied positions and drift animations
   const petals = useMemo(() => {
-    return Array.from({ length: 16 }).map((_, i) => ({
+    return Array.from({ length: 10 }).map((_, i) => ({
       id: i,
-      left: `${(i * 6.25 + (i % 3) * 2) % 100}%`,
-      delay: `${(i * 1.3) % 8}s`,
-      duration: `${12 + (i % 7) * 2}s`,
-      size: `${12 + (i % 4) * 4}px`,
-      opacity: 0.15 + (i % 4) * 0.08,
+      left: `${(i * 10 + (i % 3) * 3) % 100}%`,
+      delay: `${(i * 1.4) % 8}s`,
+      duration: `${13 + (i % 5) * 2}s`,
+      size: `${12 + (i % 3) * 4}px`,
+      opacity: 0.14 + (i % 4) * 0.06,
       rotation: `${(i * 45) % 360}deg`,
     }));
   }, []);
@@ -30,14 +30,14 @@ export const BackgroundEffects: React.FC = () => {
       />
 
       {/* Subtle warm ember / sparkle glow spots */}
-      <div className="absolute top-1/4 left-1/3 w-96 h-96 bg-rose-600/10 rounded-full blur-[100px] animate-pulse-gentle" />
-      <div className="absolute bottom-1/3 right-1/4 w-80 h-80 bg-red-700/10 rounded-full blur-[90px] animate-pulse-gentle" style={{ animationDelay: '2s' }} />
+      <div className="hidden sm:block absolute top-1/4 left-1/3 w-96 h-96 bg-rose-600/10 rounded-full blur-3xl animate-pulse-gentle" />
+      <div className="hidden sm:block absolute bottom-1/3 right-1/4 w-80 h-80 bg-red-700/10 rounded-full blur-3xl animate-pulse-gentle" style={{ animationDelay: '2s' }} />
 
       {/* Floating Rose Petals / Hearts */}
       {petals.map((petal) => (
         <span
           key={petal.id}
-          className="absolute block select-none text-rose-400/40"
+          className="absolute block select-none text-rose-400/40 will-change-transform"
           style={{
             left: petal.left,
             top: '-5%',

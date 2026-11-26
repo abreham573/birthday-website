@@ -22,21 +22,56 @@ export const googleProvider = new GoogleAuthProvider();
 
 export const OWNER_EMAIL = 'abrehamreigns@gmail.com';
 
-let firestoreQuotaLocked = false;
+const QUOTA_LOCK_STORAGE_KEY = 'tsi_firestore_quota_lock_until';
+const QUOTA_COOLDOWN_MS = 5 * 60 * 1000;
+
+function readInitialQuotaLock(): boolean {
+  try {
+    const raw = sessionStorage.getItem(QUOTA_LOCK_STORAGE_KEY);
+    if (!raw) return false;
+    const until = Number(raw);
+    if (Number.isFinite(until) && until > Date.now()) {
+      return true;
+    }
+    sessionStorage.removeItem(QUOTA_LOCK_STORAGE_KEY);
+  } catch {
+    // Ignore storage restrictions
+  }
+  return false;
+}
+
+let firestoreQuotaLocked = readInitialQuotaLock();
+if (firestoreQuotaLocked) {
+  void disableNetwork(db).catch(() => {});
+}
 
 export function isFirestoreQuotaLocked(): boolean {
   return firestoreQuotaLocked;
 }
 
 export function lockFirestoreForQuota(): void {
-  if (firestoreQuotaLocked) return;
-  firestoreQuotaLocked = true;
-  // Stop Firestore SDK background stream retries ("Using maximum backoff delay")
-  void disableNetwork(db).catch(() => {});
+  if (!firestoreQuotaLocked) {
+    firestoreQuotaLocked = true;
+    // Stop Firestore SDK background stream retries ("Using maximum backoff delay")
+    void disableNetwork(db).catch(() => {});
+  }
+  try {
+    sessionStorage.setItem(
+      QUOTA_LOCK_STORAGE_KEY,
+      String(Date.now() + QUOTA_COOLDOWN_MS)
+    );
+  } catch {
+    // Ignore storage restrictions
+  }
 }
 
 export async function unlockFirestoreForRetry(): Promise<void> {
   firestoreQuotaLocked = false;
+  try {
+    sessionStorage.removeItem(QUOTA_LOCK_STORAGE_KEY);
+  } catch {
+    // Ignore
+  }
   await enableNetwork(db);
 }
 
@@ -91,11 +126,11 @@ export function handleFirestoreError(
 ): never {
   const rawMessage = error instanceof Error ? error.message : String(error);
   const lower = rawMessage.toLowerCase();
-  if (
+  const isQuota =
     lower.includes('quota exceeded') ||
     lower.includes('quota limit exceeded') ||
-    lower.includes('resource-exhausted')
-  ) {
+    lower.includes('resource-exhausted');
+  if (isQuota) {
     lockFirestoreForQuota();
   }
 
@@ -116,7 +151,11 @@ export function handleFirestoreError(
     operationType,
     path,
   };
-  console.error('Firestore Error: ', JSON.stringify(errInfo));
+  if (isQuota) {
+    console.warn('Firestore quota reached, serving cached data:', path);
+  } else {
+    console.error('Firestore Error: ', JSON.stringify(errInfo));
+  }
   throw new Error(JSON.stringify(errInfo));
 }
 
