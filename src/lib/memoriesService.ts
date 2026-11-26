@@ -16,7 +16,13 @@ import {
   updateDoc,
   writeBatch,
 } from 'firebase/firestore';
-import { db, handleFirestoreError, OperationType } from './firebase';
+import {
+  connectionCheckPromise,
+  db,
+  handleFirestoreError,
+  isFirestoreQuotaLocked,
+  OperationType,
+} from './firebase';
 import {
   deleteCachedMediaBlob,
   getCachedGateConfig,
@@ -38,6 +44,60 @@ const MAX_CHUNKS = 40;
 const CHUNKS_PER_BATCH = 8; // <= ~5.2 MB per batch to stay well under Firestore's 10 MB request limit
 const MAX_VIDEO_BYTES = 18 * 1024 * 1024; // ~18MB max video (~24MB base64 <= 40 chunks)
 
+const LEGACY_PLACEHOLDER_CAPTIONS = new Set([
+  'a cherished memory of my love, tsi.',
+  'a cherished memory of my love.',
+  'a cherished moment of my love, tsi.',
+]);
+
+const LEGACY_PLACEHOLDER_TITLES = new Set([
+  'tsi',
+  'tsi memory',
+  'my beautiful tsi',
+  'my beautiful tsi ❤️',
+  'beautiful tsi ❤️',
+]);
+
+function isLegacyPlaceholderTitle(title?: string): boolean {
+  const trimmed = (title ?? '').trim();
+  if (!trimmed) return true;
+  const lower = trimmed.toLowerCase();
+  return LEGACY_PLACEHOLDER_TITLES.has(lower) || /^tsi memory #\d+$/i.test(lower);
+}
+
+export function getDisplayCaption(
+  itemOrCaption?: Pick<MemoryItem, 'title' | 'caption'> | string | null
+): string {
+  if (!itemOrCaption) return '';
+
+  if (typeof itemOrCaption === 'string') {
+    const trimmed = itemOrCaption.trim();
+    if (!trimmed || LEGACY_PLACEHOLDER_CAPTIONS.has(trimmed.toLowerCase())) {
+      return '';
+    }
+    return trimmed;
+  }
+
+  const rawCaption = (itemOrCaption.caption ?? '').trim();
+  const cleanCaption =
+    rawCaption && !LEGACY_PLACEHOLDER_CAPTIONS.has(rawCaption.toLowerCase())
+      ? rawCaption
+      : '';
+
+  const rawTitle = (itemOrCaption.title ?? '').trim();
+  const cleanTitle =
+    rawTitle && !isLegacyPlaceholderTitle(rawTitle) ? rawTitle : '';
+
+  if (cleanTitle && cleanCaption) {
+    if (cleanTitle.toLowerCase() === cleanCaption.toLowerCase()) {
+      return cleanCaption;
+    }
+    return `${cleanTitle}\n${cleanCaption}`;
+  }
+
+  return cleanCaption || cleanTitle;
+}
+
 export function isQuotaExceededError(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err);
   const lower = msg.toLowerCase();
@@ -45,6 +105,16 @@ export function isQuotaExceededError(err: unknown): boolean {
     lower.includes('quota exceeded') ||
     lower.includes('quota limit exceeded') ||
     lower.includes('resource-exhausted')
+  );
+}
+
+export function isOfflineError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  const lower = msg.toLowerCase();
+  return (
+    lower.includes('client is offline') ||
+    lower.includes('failed to get document because the client is offline') ||
+    lower.includes('network-request-failed')
   );
 }
 
@@ -209,6 +279,11 @@ async function compressImageFile(file: File): Promise<{ dataUrl: string; mimeTyp
   });
 }
 
+export async function compressImageFileToDataUrl(file: File): Promise<string> {
+  const { dataUrl } = await compressImageFile(file);
+  return dataUrl;
+}
+
 function dataUrlToBlob(dataUrl: string): Blob | null {
   try {
     if (!dataUrl.startsWith('data:')) return null;
@@ -265,11 +340,10 @@ export async function uploadMemoryFileToFirestore(params: {
     `mem_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
   );
   const aspectRatio: '4:3' | '16:9' = mediaType === 'video' ? '16:9' : '4:3';
-  const safeTitle = title.trim().slice(0, 160) || 'My Beautiful Tsi';
-  const safeCaption =
-    caption.trim().slice(0, 1000) || 'A cherished memory of my love, Tsi.';
-  const safeDate = date.trim().slice(0, 80) || 'Special Moment';
-  const safeTag = tag.trim().slice(0, 60) || 'Birthday Special';
+  const safeTitle = title.trim().slice(0, 160) || 'Tsi';
+  const safeCaption = caption.trim().slice(0, 1000);
+  const safeDate = date.trim().slice(0, 80);
+  const safeTag = tag.trim().slice(0, 60);
 
   const memoryRef = doc(db, 'memories', memoryId);
 
@@ -414,11 +488,10 @@ export async function saveMemoryUrlToFirestore(params: {
     `mem_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
   );
   const aspectRatio: '4:3' | '16:9' = mediaType === 'video' ? '16:9' : '4:3';
-  const safeTitle = title.trim().slice(0, 160) || 'My Beautiful Tsi';
-  const safeCaption =
-    caption.trim().slice(0, 1000) || 'A cherished memory of my love, Tsi.';
-  const safeDate = date.trim().slice(0, 80) || 'Special Moment';
-  const safeTag = tag.trim().slice(0, 60) || 'Birthday Special';
+  const safeTitle = title.trim().slice(0, 160) || 'Tsi';
+  const safeCaption = caption.trim().slice(0, 1000);
+  const safeDate = date.trim().slice(0, 80);
+  const safeTag = tag.trim().slice(0, 60);
   const safeUrl = url.trim().slice(0, 900000);
   if (
     !/^(https?:\/\/|\/|data:(image|video)\/)/i.test(safeUrl)
@@ -487,6 +560,14 @@ export async function resolveChunkedMemoryUrl(
     }
 
     // 2. Fetch immutable chunks from Firestore once and cache locally
+    await connectionCheckPromise;
+    if (
+      isFirestoreQuotaLocked() ||
+      (typeof navigator !== 'undefined' && navigator.onLine === false)
+    ) {
+      return '';
+    }
+
     const chunksPath = `memories/${memoryId}/chunks`;
     try {
       const chunksQuery = query(
@@ -506,6 +587,9 @@ export async function resolveChunkedMemoryUrl(
       }
       return fullDataUrl;
     } catch (chunkErr) {
+      if (isOfflineError(chunkErr)) {
+        return '';
+      }
       handleFirestoreError(chunkErr, OperationType.LIST, chunksPath);
     }
   })().finally(() => {
@@ -519,6 +603,13 @@ export async function resolveChunkedMemoryUrl(
 export async function fetchMemoriesFromFirestore(): Promise<MemoryItem[]> {
   const path = 'memories';
   const PAGE_SIZE = 100;
+  await connectionCheckPromise;
+  if (
+    isFirestoreQuotaLocked() ||
+    (typeof navigator !== 'undefined' && navigator.onLine === false)
+  ) {
+    return getCachedMemoriesFallback();
+  }
   try {
     const allDocs: QueryDocumentSnapshot<DocumentData>[] = [];
     let lastDoc: QueryDocumentSnapshot<DocumentData> | null = null;
@@ -572,10 +663,10 @@ export async function fetchMemoriesFromFirestore(): Promise<MemoryItem[]> {
           id: docSnap.id,
           type: mediaType,
           url: resolvedUrl,
-          title: data.title || 'Tsi Memory',
+          title: data.title || 'Tsi',
           caption: data.caption || '',
-          date: data.date || 'Special Moment',
-          tag: data.tag || 'Birthday Special',
+          date: data.date || '',
+          tag: data.tag || '',
           aspectRatio: data.aspectRatio || (mediaType === 'video' ? '16:9' : '4:3'),
           isCustom: true,
           isChunked,
@@ -589,6 +680,9 @@ export async function fetchMemoriesFromFirestore(): Promise<MemoryItem[]> {
     void saveCachedMemoriesList(items);
     return items;
   } catch (error) {
+    if (isOfflineError(error)) {
+      return getCachedMemoriesFallback();
+    }
     handleFirestoreError(error, OperationType.LIST, path);
   }
 }
@@ -652,10 +746,10 @@ export async function updateMemoryMetadataInFirestore(params: {
   const { memoryId, title, caption, date, tag } = params;
   const path = `memories/${memoryId}`;
 
-  const safeTitle = title.trim().slice(0, 160) || 'My Beautiful Tsi';
+  const safeTitle = title.trim().slice(0, 160) || 'Tsi';
   const safeCaption = caption.trim().slice(0, 1000);
-  const safeDate = date.trim().slice(0, 80) || 'Special Moment';
-  const safeTag = tag.trim().slice(0, 60) || 'Birthday Special';
+  const safeDate = date.trim().slice(0, 80);
+  const safeTag = tag.trim().slice(0, 60);
 
   try {
     await updateDoc(doc(db, 'memories', memoryId), {
@@ -691,6 +785,13 @@ export async function updateMemoryMetadataInFirestore(params: {
 
 export async function fetchLetterFromFirestore(): Promise<LoveLetterData | null> {
   const path = 'letter/birthday';
+  await connectionCheckPromise;
+  if (
+    isFirestoreQuotaLocked() ||
+    (typeof navigator !== 'undefined' && navigator.onLine === false)
+  ) {
+    return getCachedLetterFallback();
+  }
   try {
     const snap = await getDoc(doc(db, 'letter', 'birthday'));
     if (!snap.exists()) return null;
@@ -715,6 +816,9 @@ export async function fetchLetterFromFirestore(): Promise<LoveLetterData | null>
     await saveCachedLetter(letter);
     return letter;
   } catch (error) {
+    if (isOfflineError(error)) {
+      return getCachedLetterFallback();
+    }
     handleFirestoreError(error, OperationType.GET, path);
   }
 }
@@ -913,6 +1017,13 @@ export async function hashGatePassword(rawPassword: string): Promise<string> {
 
 export async function fetchGateConfigFromFirestore(): Promise<AccessGateConfig | null> {
   const path = 'gate/config';
+  await connectionCheckPromise;
+  if (
+    isFirestoreQuotaLocked() ||
+    (typeof navigator !== 'undefined' && navigator.onLine === false)
+  ) {
+    return getCachedGateConfigFallback();
+  }
   try {
     const snap = await getDoc(doc(db, 'gate', 'config'));
     if (!snap.exists()) return null;
@@ -938,6 +1049,9 @@ export async function fetchGateConfigFromFirestore(): Promise<AccessGateConfig |
     await saveCachedGateConfig(config);
     return config;
   } catch (error) {
+    if (isOfflineError(error)) {
+      return getCachedGateConfigFallback();
+    }
     handleFirestoreError(error, OperationType.GET, path);
   }
 }
@@ -1024,10 +1138,18 @@ export const DEFAULT_SONG_CONFIG: SongConfig = {
     "*And you're all I ever need...",
   ].join('\n'),
   meaning: '',
+  coverPhotoUrl: '',
 };
 
 export async function fetchSongConfigFromFirestore(): Promise<SongConfig | null> {
   const path = 'song/config';
+  await connectionCheckPromise;
+  if (
+    isFirestoreQuotaLocked() ||
+    (typeof navigator !== 'undefined' && navigator.onLine === false)
+  ) {
+    return getCachedSongConfigFallback();
+  }
   try {
     const snap = await getDoc(doc(db, 'song', 'config'));
     if (!snap.exists()) return null;
@@ -1059,10 +1181,15 @@ export async function fetchSongConfigFromFirestore(): Promise<SongConfig | null>
           ? data.lyricsText
           : DEFAULT_SONG_CONFIG.lyricsText,
       meaning: typeof data.meaning === 'string' ? data.meaning : DEFAULT_SONG_CONFIG.meaning,
+      coverPhotoUrl:
+        typeof data.coverPhotoUrl === 'string' ? data.coverPhotoUrl : '',
     };
     await saveCachedSongConfig(song);
     return song;
   } catch (error) {
+    if (isOfflineError(error)) {
+      return getCachedSongConfigFallback();
+    }
     handleFirestoreError(error, OperationType.GET, path);
   }
 }
@@ -1094,6 +1221,7 @@ export async function saveSongConfigToFirestore(
   const safeLyricsText =
     song.lyricsText.trim().slice(0, 4000) || DEFAULT_SONG_CONFIG.lyricsText;
   const safeMeaning = song.meaning.trim().slice(0, 2000);
+  const safeCoverPhotoUrl = (song.coverPhotoUrl ?? '').trim().slice(0, 900000);
 
   try {
     const existing = await getDoc(songRef);
@@ -1106,6 +1234,7 @@ export async function saveSongConfigToFirestore(
         dedicationBody: safeDedicationBody,
         lyricsText: safeLyricsText,
         meaning: safeMeaning,
+        coverPhotoUrl: safeCoverPhotoUrl,
         authorId,
         updatedAt: serverTimestamp(),
       });
@@ -1118,6 +1247,7 @@ export async function saveSongConfigToFirestore(
         dedicationBody: safeDedicationBody,
         lyricsText: safeLyricsText,
         meaning: safeMeaning,
+        coverPhotoUrl: safeCoverPhotoUrl,
         updatedAt: serverTimestamp(),
       });
     }
@@ -1130,6 +1260,7 @@ export async function saveSongConfigToFirestore(
       dedicationBody: safeDedicationBody,
       lyricsText: safeLyricsText,
       meaning: safeMeaning,
+      coverPhotoUrl: safeCoverPhotoUrl,
     };
     await saveCachedSongConfig(saved);
     return saved;

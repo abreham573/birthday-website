@@ -117,7 +117,7 @@ export const LoveLetterPage: React.FC<LoveLetterPageProps> = ({
   };
 
   return (
-    <div className="relative min-h-[calc(100vh-4rem)] pb-28 pt-4 sm:pt-8 max-w-4xl mx-auto px-4 sm:px-6">
+    <div className="relative min-h-[calc(100vh-4rem)] pb-8 md:pb-16 pt-4 sm:pt-8 max-w-4xl mx-auto px-4 sm:px-6">
       {/* Chapter 02 Header */}
       <section className="text-center max-w-2xl mx-auto mb-6 sm:mb-10">
         <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-rose-950/60 border border-rose-500/25 text-rose-300 text-xs font-medium mb-3 backdrop-blur-md">
@@ -360,7 +360,7 @@ export const LoveLetterPage: React.FC<LoveLetterPageProps> = ({
             {/* Tactile Letter Paper Stationery Sheet */}
             <article
               onClick={handleLetterTap}
-              className="parchment-paper rounded-2xl sm:rounded-3xl p-6 sm:p-12 md:p-14 relative shadow-2xl shadow-black/70 transition-all cursor-pointer select-none overflow-hidden border border-amber-900/20"
+              className="parchment-paper rounded-2xl sm:rounded-3xl p-5 sm:p-12 md:p-14 relative shadow-2xl shadow-black/70 transition-all cursor-pointer select-none overflow-hidden border border-amber-900/20"
               style={{
                 backgroundColor: '#fcf5ec',
                 backgroundImage: `
@@ -573,7 +573,7 @@ export const LoveLetterPage: React.FC<LoveLetterPageProps> = ({
                   </h2>
 
                   {/* Paragraphs */}
-                  <div className="space-y-4 font-serif-cormorant text-base sm:text-lg lg:text-xl text-rose-900/90 leading-relaxed">
+                  <div className="space-y-4 font-serif-cormorant text-base sm:text-lg lg:text-xl text-rose-950/90 leading-relaxed">
                     {letterData.paragraphs.map((p, idx) => (
                       <p key={idx} className="first-letter:text-2xl first-letter:font-bold">
                         {p}

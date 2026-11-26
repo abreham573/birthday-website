@@ -120,7 +120,10 @@ export function handleFirestoreError(
   throw new Error(JSON.stringify(errInfo));
 }
 
-async function testConnection() {
+async function testConnection(): Promise<void> {
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+    return;
+  }
   try {
     await getDocFromServer(doc(db, 'test', 'connection'));
   } catch (error) {
@@ -132,10 +135,14 @@ async function testConnection() {
         lower.includes('resource-exhausted')
       ) {
         lockFirestoreForQuota();
-      } else if (error.message.includes('the client is offline')) {
+      } else if (
+        error.message.includes('the client is offline') &&
+        (typeof navigator === 'undefined' || navigator.onLine !== false)
+      ) {
         console.error('Please check your Firebase configuration.');
       }
     }
   }
 }
-testConnection();
+
+export const connectionCheckPromise: Promise<void> = testConnection();

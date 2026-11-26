@@ -41,4 +41,5 @@ export interface SongConfig {
   dedicationBody: string;
   lyricsText: string;
   meaning: string;
+  coverPhotoUrl?: string;
 }

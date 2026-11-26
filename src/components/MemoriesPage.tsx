@@ -17,7 +17,10 @@ import {
   RotateCcw,
 } from 'lucide-react';
 import { MemoryItem } from '../types';
-import { getReadableFirestoreErrorMessage } from '../lib/memoriesService';
+import {
+  getDisplayCaption,
+  getReadableFirestoreErrorMessage,
+} from '../lib/memoriesService';
 import { EmojiQuickPicker, insertTextAtCursor } from './EmojiQuickPicker';
 
 interface MemoriesPageProps {
@@ -74,15 +77,10 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
 
   // Inline caption editor state (owner only)
   const [isEditingCaption, setIsEditingCaption] = useState<boolean>(false);
-  const [editTitle, setEditTitle] = useState<string>('');
-  const [editDate, setEditDate] = useState<string>('');
-  const [editTag, setEditTag] = useState<string>('Birthday Special');
   const [editCaption, setEditCaption] = useState<string>('');
   const [isSavingCaption, setIsSavingCaption] = useState<boolean>(false);
   const [captionSaveError, setCaptionSaveError] = useState<string | null>(null);
 
-  const filmstripRef = useRef<HTMLDivElement | null>(null);
-  const thumbRefs = useRef<(HTMLButtonElement | null)[]>([]);
   const editCaptionTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const isDraggingRef = useRef<boolean>(false);
   const swipeGestureRef = useRef<{
@@ -127,6 +125,7 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
   }, [filteredMemories.length, dragTilt]);
 
   const activeItem = filteredMemories[currentIndex] ?? null;
+  const activeDisplayCaption = getDisplayCaption(activeItem);
   const isFirstSlide = currentIndex === 0;
   const isLastSlide =
     filteredMemories.length > 0 && currentIndex === filteredMemories.length - 1;
@@ -288,10 +287,7 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
   const handleStartEditCaption = () => {
     if (!activeItem) return;
     setIsAutoPlaying(false);
-    setEditTitle(activeItem.title);
-    setEditDate(activeItem.date);
-    setEditTag(activeItem.tag || 'Birthday Special');
-    setEditCaption(activeItem.caption || '');
+    setEditCaption(getDisplayCaption(activeItem));
     setCaptionSaveError(null);
     setIsEditingCaption(true);
   };
@@ -304,10 +300,10 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
     try {
       await onUpdateMemory({
         id: activeItem.id,
-        title: editTitle,
+        title: 'Tsi',
         caption: editCaption,
-        date: editDate,
-        tag: editTag,
+        date: '',
+        tag: '',
       });
       setIsEditingCaption(false);
     } catch (err) {
@@ -520,18 +516,6 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
     return () => window.removeEventListener('keydown', onKeyDown);
   }, []);
 
-  // Keep active filmstrip thumbnail centered horizontally without scrolling the page vertically
-  useEffect(() => {
-    if (albumState !== 'pages') return;
-    const container = filmstripRef.current;
-    const el = thumbRefs.current[currentIndex];
-    if (container && el) {
-      const targetLeft =
-        el.offsetLeft - container.clientWidth / 2 + el.clientWidth / 2;
-      container.scrollTo({ left: Math.max(0, targetLeft), behavior: 'smooth' });
-    }
-  }, [currentIndex, albumState]);
-
   const beginSwipe = useCallback((x: number, y: number) => {
     if (dragResetTimerRef.current !== null) {
       window.clearTimeout(dragResetTimerRef.current);
@@ -641,7 +625,7 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
   };
 
   return (
-    <div className="relative min-h-[calc(100vh-4rem)] pb-28 pt-4 sm:pt-8 max-w-6xl mx-auto px-4 sm:px-6 overflow-x-hidden">
+    <div className="relative min-h-[calc(100vh-4rem)] pb-8 md:pb-16 pt-4 sm:pt-8 max-w-6xl mx-auto px-4 sm:px-6 overflow-x-hidden">
       {/* Hero Header Section */}
       <section className="text-center max-w-3xl mx-auto mb-6 sm:mb-8">
         <p className="text-xs font-medium tracking-[0.2em] uppercase text-rose-300/85 mb-2.5">
@@ -726,7 +710,7 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
         /* Real Keepsake Photo Album with Front Cover + 3D Page Flip + End Closing Animation */
         <section aria-label="Tsi's Photo Album" className="max-w-4xl mx-auto space-y-5">
           {/* Top Album Controls */}
-          <div className="flex items-center justify-between gap-3 px-1 text-xs">
+          <div className="flex flex-wrap items-center justify-between gap-2 px-1 text-xs">
             <div className="flex items-center gap-2 text-rose-200/90 min-w-0">
               <BookOpen className="w-3.5 h-3.5 text-amber-300/90 shrink-0" />
               {albumState === 'frontCover' ? (
@@ -743,10 +727,12 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
                   <span className="font-semibold tabular-nums whitespace-nowrap text-white">
                     Page {currentIndex + 1} of {filteredMemories.length}
                   </span>
-                  <span aria-hidden="true" className="text-rose-500/50">·</span>
-                  <span className="truncate text-rose-300/80">
-                    {isLastSlide ? 'Final Page' : activeItem.tag}
-                  </span>
+                  {isLastSlide && (
+                    <>
+                      <span aria-hidden="true" className="text-rose-500/50">·</span>
+                      <span className="truncate text-rose-300/80">Final Page</span>
+                    </>
+                  )}
                 </>
               )}
             </div>
@@ -782,6 +768,25 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
                           <span>Auto-Turn</span>
                         </>
                       )}
+                    </button>
+                  )}
+
+                  {isOwner && onUpdateMemory && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (isEditingCaption) {
+                          setIsEditingCaption(false);
+                          setCaptionSaveError(null);
+                        } else {
+                          handleStartEditCaption();
+                        }
+                      }}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-950/70 hover:bg-amber-900/70 border border-amber-400/30 text-amber-100 transition-colors whitespace-nowrap cursor-pointer"
+                      title="Edit this page's caption"
+                    >
+                      <Edit3 className="w-3.5 h-3.5" />
+                      <span>{isEditingCaption ? 'Close Editor' : 'Edit Caption'}</span>
                     </button>
                   )}
 
@@ -829,7 +834,7 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
 
               {/* 3D Spine-Hinged Page Flipping Viewport */}
               <div
-                className="relative h-[420px] sm:h-[515px] md:h-[565px] rounded-xl overflow-hidden bg-[#2b030c]"
+                className="relative h-[480px] sm:h-[560px] md:h-[600px] rounded-xl overflow-hidden bg-[#2b030c]"
                 style={{ perspective: '2000px' }}
               >
                 {/* ================= BASE LAYER (ALWAYS FLAT UNDERNEATH) ================= */}
@@ -1224,7 +1229,7 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
                     </button>
 
                     {/* Mounted Photo Print Area inside the Album Page */}
-                    <div className="relative flex-1 min-h-0 flex items-center justify-center p-4 sm:p-7 pl-9 sm:pl-12">
+                    <div className="relative flex-1 min-h-0 flex items-center justify-center p-3.5 sm:p-6 pb-2 pl-9 sm:pl-12">
                       <div className="relative w-full h-full flex items-center justify-center rounded-lg bg-white p-2 sm:p-3 shadow-[0_10px_28px_-8px_rgba(38,14,18,0.28)] border border-[#e3d4be]">
                         {/* Classic Photo Album Corner Mounts */}
                         <span
@@ -1313,15 +1318,29 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
                       </div>
                     </div>
 
-                    {/* Subtle Archival Page Footer Margin */}
-                    <div className="shrink-0 flex items-center justify-between gap-3 px-9 sm:px-14 pb-3 pt-0.5 text-[11px] text-[#6d3b42]/80">
-                      <span className="truncate font-serif-cormorant italic text-sm text-[#4f1f27]">
-                        {activeItem.title}
-                      </span>
-                      <span className="shrink-0 tabular-nums font-medium pr-8 sm:pr-10">
-                        {String(currentIndex + 1).padStart(2, '0')} /{' '}
-                        {String(filteredMemories.length).padStart(2, '0')}
-                      </span>
+                    {/* Archival Page Caption & Page Number directly inside the Photo Album */}
+                    <div
+                      onClick={(e) => e.stopPropagation()}
+                      className="shrink-0 pl-9 sm:pl-12 pr-12 sm:pr-16 pb-3.5 pt-1.5 text-[#3b1119]"
+                    >
+                      {activeDisplayCaption ? (
+                        <div className="flex items-end justify-between gap-3">
+                          <p className="min-w-0 flex-1 font-serif-cormorant text-base sm:text-xl font-bold text-[#3b1119] leading-snug whitespace-pre-line max-h-24 sm:max-h-28 overflow-y-auto">
+                            {activeDisplayCaption}
+                          </p>
+                          <span className="shrink-0 tabular-nums text-[11px] font-semibold text-[#6d3b42]/75 pb-0.5">
+                            {String(currentIndex + 1).padStart(2, '0')} /{' '}
+                            {String(filteredMemories.length).padStart(2, '0')}
+                          </span>
+                        </div>
+                      ) : (
+                        <div className="flex items-center justify-end">
+                          <span className="tabular-nums text-[11px] font-semibold text-[#6d3b42]/75">
+                            {String(currentIndex + 1).padStart(2, '0')} /{' '}
+                            {String(filteredMemories.length).padStart(2, '0')}
+                          </span>
+                        </div>
+                      )}
                     </div>
 
                     {/* Realistic Curled Paper Page Corner (Bottom-Right) — Tap or swipe right to flip the page */}
@@ -1512,7 +1531,7 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
                               <span className="w-3 h-1 rounded-full bg-[#6d3f32]/40" />
                               <span className="w-3 h-1 rounded-full bg-[#6d3f32]/40" />
                             </div>
-                            <div className="relative flex-1 min-h-0 flex items-center justify-center p-4 sm:p-7 pl-9 sm:pl-12">
+                            <div className="relative flex-1 min-h-0 flex items-center justify-center p-3.5 sm:p-6 pb-2 pl-9 sm:pl-12">
                               <div className="relative w-full h-full flex items-center justify-center rounded-lg bg-white p-2 sm:p-3 shadow-[0_10px_28px_-8px_rgba(38,14,18,0.28)] border border-[#e3d4be]">
                                 {flipSheet.item?.type === 'photo' && flipSheet.item.url ? (
                                   <img
@@ -1531,20 +1550,36 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
                                 ) : (
                                   <div className="flex flex-col items-center justify-center text-rose-900/60">
                                     <Film className="w-10 h-10 mb-2" />
-                                    <span className="text-xs">{flipSheet.item?.title}</span>
+                                    <span className="text-xs">Video Memory</span>
                                   </div>
                                 )}
                               </div>
                             </div>
-                            <div className="shrink-0 flex items-center justify-between gap-3 px-9 sm:px-14 pb-3 pt-0.5 text-[11px] text-[#6d3b42]/80">
-                              <span className="truncate font-serif-cormorant italic text-sm text-[#4f1f27]">
-                                {flipSheet.item?.title}
-                              </span>
-                              <span className="shrink-0 tabular-nums font-medium">
-                                {String(flipSheet.pageIndex + 1).padStart(2, '0')} /{' '}
-                                {String(filteredMemories.length).padStart(2, '0')}
-                              </span>
-                            </div>
+                            {(() => {
+                              const flipDisplayCaption = getDisplayCaption(flipSheet.item);
+                              return (
+                                <div className="shrink-0 pl-9 sm:pl-12 pr-12 sm:pr-16 pb-3.5 pt-1.5 text-[#3b1119]">
+                                  {flipDisplayCaption ? (
+                                    <div className="flex items-end justify-between gap-3">
+                                      <p className="min-w-0 flex-1 font-serif-cormorant text-base sm:text-xl font-bold text-[#3b1119] leading-snug whitespace-pre-line max-h-24 sm:max-h-28 overflow-hidden">
+                                        {flipDisplayCaption}
+                                      </p>
+                                      <span className="shrink-0 tabular-nums text-[11px] font-semibold text-[#6d3b42]/75 pb-0.5">
+                                        {String(flipSheet.pageIndex + 1).padStart(2, '0')} /{' '}
+                                        {String(filteredMemories.length).padStart(2, '0')}
+                                      </span>
+                                    </div>
+                                  ) : (
+                                    <div className="flex items-center justify-end">
+                                      <span className="tabular-nums text-[11px] font-semibold text-[#6d3b42]/75">
+                                        {String(flipSheet.pageIndex + 1).padStart(2, '0')} /{' '}
+                                        {String(filteredMemories.length).padStart(2, '0')}
+                                      </span>
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })()}
                           </div>
                         )}
                       </div>
@@ -1671,83 +1706,9 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
                 </p>
               </div>
 
-              {/* Compact Filmstrip Thumbnail Bar */}
-              <div
-                ref={filmstripRef}
-                className="relative overflow-x-auto py-2 px-1"
-              >
-                <div className="flex items-center justify-center gap-2.5 w-max min-w-full">
-                  {filteredMemories.map((item, idx) => {
-                    const isActive = idx === currentIndex;
-                    return (
-                      <button
-                        key={item.id}
-                        ref={(el) => {
-                          thumbRefs.current[idx] = el;
-                        }}
-                        type="button"
-                        onClick={() => {
-                          setIsAutoPlaying(false);
-                          goToSlide(idx);
-                        }}
-                        aria-label={`Go to page ${idx + 1}: ${item.title}`}
-                        className={`relative shrink-0 w-14 h-14 sm:w-16 sm:h-16 rounded-xl overflow-hidden border transition-all cursor-pointer ${
-                          isActive
-                            ? 'border-rose-300 ring-2 ring-rose-500/80 scale-105 shadow-lg'
-                            : 'border-rose-500/20 opacity-60 hover:opacity-100'
-                        }`}
-                      >
-                        {item.type === 'photo' && item.url ? (
-                          <img
-                            src={item.url}
-                            alt={item.title}
-                            referrerPolicy="no-referrer"
-                            loading="lazy"
-                            decoding="async"
-                            className="w-full h-full object-cover"
-                          />
-                        ) : item.thumbnailUrl ? (
-                          <img
-                            src={item.thumbnailUrl}
-                            alt={item.title}
-                            referrerPolicy="no-referrer"
-                            loading="lazy"
-                            decoding="async"
-                            className="w-full h-full object-cover"
-                          />
-                        ) : (
-                          <div className="w-full h-full bg-gradient-to-br from-rose-900/80 to-[#190207] flex items-center justify-center text-rose-200">
-                            <Film className="w-4 h-4" />
-                          </div>
-                        )}
-
-                        {item.type === 'video' && (
-                          <span className="absolute bottom-1 right-1 w-4 h-4 rounded-full bg-black/75 text-white flex items-center justify-center">
-                            <Play className="w-2 h-2 fill-current ml-0.5" />
-                          </span>
-                        )}
-                      </button>
-                    );
-                  })}
-
-                  {isOwner && (
-                    <button
-                      type="button"
-                      onClick={onOpenAddModal}
-                      aria-label="Add more photos or videos"
-                      title="Add more photos or videos"
-                      className="shrink-0 w-14 h-14 sm:w-16 sm:h-16 rounded-xl border-2 border-dashed border-rose-500/35 hover:border-rose-400 bg-rose-950/30 hover:bg-rose-950/60 text-rose-300 hover:text-white flex flex-col items-center justify-center gap-0.5 transition-colors cursor-pointer"
-                    >
-                      <Plus className="w-4 h-4" />
-                      <span className="text-[9px] font-medium">Add</span>
-                    </button>
-                  )}
-                </div>
-              </div>
-
-              {/* Full Active Photo Caption Card at the Bottom */}
-              <div className="max-w-2xl mx-auto romantic-card rounded-2xl p-4 sm:p-5 border border-rose-500/20 text-center">
-                {isEditingCaption && isOwner ? (
+              {/* Owner-Only Caption Editor Form (shown only while actively editing) */}
+              {isEditingCaption && isOwner && (
+                <div className="max-w-2xl mx-auto romantic-card rounded-2xl p-4 sm:p-5 border border-rose-500/20 text-center">
                   <form onSubmit={handleSaveCaption} className="space-y-3 text-left">
                     <div className="flex items-center justify-between gap-2">
                       <span className="text-[11px] font-semibold uppercase tracking-wider text-rose-300">
@@ -1756,50 +1717,6 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
                       <span className="text-[11px] text-rose-300/60">
                         Saves directly to cloud
                       </span>
-                    </div>
-
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
-                      <div>
-                        <label className="block text-[11px] text-rose-300/80 mb-1">
-                          Title
-                        </label>
-                        <input
-                          type="text"
-                          required
-                          maxLength={160}
-                          value={editTitle}
-                          onChange={(e) => setEditTitle(e.target.value)}
-                          className="w-full bg-black/45 border border-rose-500/30 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-rose-400"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-[11px] text-rose-300/80 mb-1">
-                          Date / Occasion
-                        </label>
-                        <input
-                          type="text"
-                          maxLength={80}
-                          value={editDate}
-                          onChange={(e) => setEditDate(e.target.value)}
-                          className="w-full bg-black/45 border border-rose-500/30 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-rose-400"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-[11px] text-rose-300/80 mb-1">
-                          Category
-                        </label>
-                        <select
-                          value={editTag}
-                          onChange={(e) => setEditTag(e.target.value)}
-                          className="w-full bg-[#1b0207] border border-rose-500/30 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-rose-400"
-                        >
-                          <option value="Birthday Special">Birthday Special</option>
-                          <option value="Sweet Moments">Sweet Moments</option>
-                          <option value="Our Firsts">Our Firsts</option>
-                          <option value="Date Nights">Date Nights</option>
-                          <option value="Adventures">Adventures</option>
-                        </select>
-                      </div>
                     </div>
 
                     <div>
@@ -1868,45 +1785,8 @@ export const MemoriesPage: React.FC<MemoriesPageProps> = ({
                       </button>
                     </div>
                   </form>
-                ) : (
-                  <div key={`caption-${activeItem.id}`}>
-                    <div className="flex flex-wrap items-center justify-center gap-2 text-[11px] text-rose-300/75 mb-1">
-                      <span>{activeItem.date}</span>
-                      <span aria-hidden="true">·</span>
-                      <span className="uppercase tracking-wider font-semibold text-rose-300">
-                        {activeItem.type}
-                      </span>
-                      {activeItem.type === 'photo' && (
-                        <>
-                          <span aria-hidden="true">·</span>
-                          <span>Tap photo to zoom</span>
-                        </>
-                      )}
-                      {isOwner && onUpdateMemory && (
-                        <>
-                          <span aria-hidden="true">·</span>
-                          <button
-                            type="button"
-                            onClick={handleStartEditCaption}
-                            className="inline-flex items-center gap-1 text-amber-200 hover:text-amber-100 font-medium underline underline-offset-2 cursor-pointer"
-                          >
-                            <Edit3 className="w-3 h-3" />
-                            <span>Edit Caption</span>
-                          </button>
-                        </>
-                      )}
-                    </div>
-
-                    <h2 className="font-serif-cormorant text-xl sm:text-2xl font-bold text-white">
-                      {activeItem.title}
-                    </h2>
-
-                    <p className="text-xs sm:text-sm text-rose-200/90 mt-1.5 font-light leading-relaxed whitespace-pre-line">
-                      {activeItem.caption || 'A cherished moment of my love, Tsi.'}
-                    </p>
-                  </div>
-                )}
-              </div>
+                </div>
+              )}
             </>
           )}
         </section>

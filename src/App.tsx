@@ -11,6 +11,7 @@ import { INITIAL_MEMORIES } from './data/initialMemories';
 import { DEFAULT_LOVE_LETTER } from './data/defaultLetter';
 import {
   auth,
+  connectionCheckPromise,
   isFirestoreQuotaLocked,
   isOwnerUser,
   lockFirestoreForQuota,
@@ -45,7 +46,6 @@ import { LoveLetterPage } from './components/LoveLetterPage';
 import { SongPage } from './components/SongPage';
 import { AddMediaModal } from './components/AddMediaModal';
 import { LightboxModal } from './components/LightboxModal';
-import { YouTubeLinkButton } from './components/YouTubeLinkButton';
 import { useHeartTapEffect } from './components/HeartTapEffect';
 
 const UNLOCK_STORAGE_KEY = 'tsi_birthday_unlocked';
@@ -149,6 +149,9 @@ export default function App() {
 
     async function loadGateConfig() {
       try {
+        await connectionCheckPromise;
+        if (!active) return;
+
         if (isFirestoreQuotaLocked()) {
           readQuotaHitRef.current = true;
           setQuotaExceeded(true);
@@ -200,6 +203,11 @@ export default function App() {
       try {
         await gateSyncPromiseRef.current;
         if (!active) return;
+
+        if (isFirestoreQuotaLocked()) {
+          readQuotaHitRef.current = true;
+          setQuotaExceeded(true);
+        }
 
         const cloudMemories = readQuotaHitRef.current
           ? null
@@ -277,6 +285,11 @@ export default function App() {
       await gateSyncPromiseRef.current;
       if (!active) return;
 
+      if (isFirestoreQuotaLocked()) {
+        readQuotaHitRef.current = true;
+        setQuotaExceeded(true);
+      }
+
       const cloudLetter = readQuotaHitRef.current
         ? await getCachedLetterFallback()
         : await fetchLetterFromFirestore().catch(async (err) => {
@@ -299,6 +312,11 @@ export default function App() {
     async function syncSong() {
       await gateSyncPromiseRef.current;
       if (!active) return;
+
+      if (isFirestoreQuotaLocked()) {
+        readQuotaHitRef.current = true;
+        setQuotaExceeded(true);
+      }
 
       const cloudSong = readQuotaHitRef.current
         ? await getCachedSongConfigFallback()
@@ -683,6 +701,7 @@ export default function App() {
             {activeTab === 'song' && (
               <SongPage
                 songConfig={songConfig}
+                albumPhotos={memories.filter((m) => m.type === 'photo' && Boolean(m.url))}
                 isOwner={isOwner}
                 onSignInOwner={handleSignInOwner}
                 onUpdateSong={handleUpdateSong}
@@ -691,13 +710,6 @@ export default function App() {
               />
             )}
           </main>
-
-          {/* Floating Shortcut Button that Redirects to YouTube */}
-          <YouTubeLinkButton
-            songTitle={songConfig.songTitle}
-            artistName={songConfig.artistName}
-            youtubeUrl={songConfig.youtubeUrl}
-          />
 
           {/* Fullscreen Lightbox Modal */}
           <LightboxModal

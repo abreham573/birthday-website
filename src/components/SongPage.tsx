@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   ExternalLink,
   Heart,
@@ -9,17 +9,23 @@ import {
   Check,
   Loader2,
   Lock,
+  Upload,
+  ImagePlus,
+  RotateCcw,
+  X,
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import austinCover from '../assets/images/austin_mahone_cover_1794420838531.jpg';
-import { SongConfig } from '../types';
+import { MemoryItem, SongConfig } from '../types';
 import {
   DEFAULT_SONG_CONFIG,
+  compressImageFileToDataUrl,
   getReadableFirestoreErrorMessage,
 } from '../lib/memoriesService';
 
 interface SongPageProps {
   songConfig?: SongConfig;
+  albumPhotos?: MemoryItem[];
   isOwner?: boolean;
   onSignInOwner?: () => Promise<void>;
   onUpdateSong?: (updated: SongConfig) => Promise<void>;
@@ -29,6 +35,7 @@ interface SongPageProps {
 
 export const SongPage: React.FC<SongPageProps> = ({
   songConfig = DEFAULT_SONG_CONFIG,
+  albumPhotos = [],
   isOwner = false,
   onSignInOwner,
   onUpdateSong,
@@ -40,12 +47,113 @@ export const SongPage: React.FC<SongPageProps> = ({
   const [isSaving, setIsSaving] = useState<boolean>(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saveSuccess, setSaveSuccess] = useState<boolean>(false);
+  const [isPhotoPickerOpen, setIsPhotoPickerOpen] = useState<boolean>(false);
+  const [isUpdatingPhoto, setIsUpdatingPhoto] = useState<boolean>(false);
+  const [photoError, setPhotoError] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     if (!isEditing) {
       setDraft(songConfig);
     }
   }, [songConfig, isEditing]);
+
+  const activeCoverPhoto = songConfig.coverPhotoUrl?.trim() || '';
+  const hasCustomPhoto = Boolean(activeCoverPhoto);
+
+  const convertUrlToSafeDataUrl = async (url: string): Promise<string> => {
+    if (!url.startsWith('blob:') && url.length <= 900000) {
+      return url;
+    }
+    const response = await fetch(url);
+    const blob = await response.blob();
+    const file = new File([blob], 'song-cover.jpg', {
+      type: blob.type || 'image/jpeg',
+    });
+    return compressImageFileToDataUrl(file);
+  };
+
+  const handlePhotoFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+
+    setPhotoError(null);
+    if (!file.type.startsWith('image/')) {
+      setPhotoError('Please choose an image file (JPG, PNG, or WEBP).');
+      return;
+    }
+
+    setIsUpdatingPhoto(true);
+    try {
+      const dataUrl = await compressImageFileToDataUrl(file);
+      if (isEditing) {
+        setDraft((prev) => ({ ...prev, coverPhotoUrl: dataUrl }));
+      } else if (isOwner && onUpdateSong) {
+        await onUpdateSong({ ...songConfig, coverPhotoUrl: dataUrl });
+        setDraft((prev) => ({ ...prev, coverPhotoUrl: dataUrl }));
+        setIsPhotoPickerOpen(false);
+      }
+    } catch (err) {
+      setPhotoError(
+        getReadableFirestoreErrorMessage(
+          err,
+          'Could not save this photo right now.'
+        )
+      );
+    } finally {
+      setIsUpdatingPhoto(false);
+    }
+  };
+
+  const handleSelectAlbumPhoto = async (photo: MemoryItem) => {
+    if (!photo.url) return;
+    setPhotoError(null);
+    setIsUpdatingPhoto(true);
+    try {
+      const safePhotoUrl = await convertUrlToSafeDataUrl(photo.url);
+      if (isEditing) {
+        setDraft((prev) => ({ ...prev, coverPhotoUrl: safePhotoUrl }));
+      } else if (isOwner && onUpdateSong) {
+        await onUpdateSong({ ...songConfig, coverPhotoUrl: safePhotoUrl });
+        setDraft((prev) => ({ ...prev, coverPhotoUrl: safePhotoUrl }));
+        setIsPhotoPickerOpen(false);
+      }
+    } catch (err) {
+      setPhotoError(
+        getReadableFirestoreErrorMessage(
+          err,
+          'Could not use that album photo right now.'
+        )
+      );
+    } finally {
+      setIsUpdatingPhoto(false);
+    }
+  };
+
+  const handleResetPhoto = async () => {
+    setPhotoError(null);
+    if (isEditing) {
+      setDraft((prev) => ({ ...prev, coverPhotoUrl: '' }));
+      return;
+    }
+    if (!isOwner || !onUpdateSong) return;
+    setIsUpdatingPhoto(true);
+    try {
+      await onUpdateSong({ ...songConfig, coverPhotoUrl: '' });
+      setDraft((prev) => ({ ...prev, coverPhotoUrl: '' }));
+      setIsPhotoPickerOpen(false);
+    } catch (err) {
+      setPhotoError(
+        getReadableFirestoreErrorMessage(
+          err,
+          'Could not reset the photo right now.'
+        )
+      );
+    } finally {
+      setIsUpdatingPhoto(false);
+    }
+  };
 
   const triggerCelebration = () => {
     confetti({
@@ -103,7 +211,15 @@ export const SongPage: React.FC<SongPageProps> = ({
   };
 
   return (
-    <div className="relative min-h-[calc(100vh-4rem)] pb-28 pt-4 sm:pt-8 max-w-5xl mx-auto px-4 sm:px-6">
+    <div className="relative min-h-[calc(100vh-4rem)] pb-8 md:pb-16 pt-4 sm:pt-8 max-w-5xl mx-auto px-4 sm:px-6">
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/*"
+        onChange={handlePhotoFileChange}
+        className="hidden"
+      />
+
       {/* Chapter 03 Header */}
       <section className="text-center max-w-3xl mx-auto mb-8 sm:mb-12">
         <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-rose-950/60 border border-rose-500/25 text-rose-300 text-xs font-medium mb-3 backdrop-blur-md">
@@ -307,6 +423,42 @@ export const SongPage: React.FC<SongPageProps> = ({
               />
             </div>
 
+            <div>
+              <label className="block text-xs font-semibold text-rose-200/90 uppercase tracking-wider mb-2">
+                Photo Above YouTube Link (Optional)
+              </label>
+              <div className="flex flex-wrap items-center gap-3">
+                <img
+                  src={draft.coverPhotoUrl?.trim() || austinCover}
+                  alt="Song cover preview"
+                  className="w-16 h-16 rounded-xl object-cover border border-rose-500/30"
+                />
+                <button
+                  type="button"
+                  disabled={isUpdatingPhoto}
+                  onClick={() => fileInputRef.current?.click()}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-rose-950/70 hover:bg-rose-900/70 border border-rose-500/30 text-xs font-medium text-rose-100 cursor-pointer disabled:opacity-50"
+                >
+                  {isUpdatingPhoto ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <Upload className="w-3.5 h-3.5" />
+                  )}
+                  <span>Upload Photo</span>
+                </button>
+                {draft.coverPhotoUrl?.trim() && (
+                  <button
+                    type="button"
+                    onClick={() => setDraft((prev) => ({ ...prev, coverPhotoUrl: '' }))}
+                    className="inline-flex items-center gap-1 px-3 py-2 rounded-xl bg-black/40 hover:bg-black/60 border border-rose-500/20 text-xs text-rose-300 hover:text-white cursor-pointer"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" />
+                    <span>Reset to Default</span>
+                  </button>
+                )}
+              </div>
+            </div>
+
             {saveError && (
               <p className="text-xs text-red-300 bg-red-950/60 border border-red-500/35 rounded-xl p-3">
                 {saveError}
@@ -414,14 +566,14 @@ export const SongPage: React.FC<SongPageProps> = ({
                 </div>
               </div>
 
-              <div className="space-y-3 font-serif-cormorant text-base sm:text-lg">
+              <div className="space-y-3 font-serif-cormorant text-lg sm:text-xl">
                 {parsedLyrics.map((line, index) => (
                   <p
                     key={index}
                     className={`transition-all duration-300 ${
                       line.type === 'chorus'
-                        ? 'text-rose-200 font-bold italic text-lg sm:text-xl pl-3 border-l-2 border-rose-500'
-                        : 'text-rose-300/80 font-normal'
+                        ? 'text-white font-bold italic text-xl sm:text-2xl pl-3.5 border-l-2 border-rose-400'
+                        : 'text-rose-100/95 font-medium'
                     }`}
                   >
                     &ldquo;{line.text}&rdquo;
@@ -443,36 +595,117 @@ export const SongPage: React.FC<SongPageProps> = ({
           </>
         )}
 
-        {/* Dedicated Song YouTube Link Section at the Bottom */}
-        <div className="romantic-card rounded-3xl p-6 sm:p-8 flex flex-col sm:flex-row items-center gap-6 sm:gap-8">
-          {/* Album Cover Art / Clickable to YouTube */}
-          <a
-            href={songConfig.youtubeUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="relative block group cursor-pointer shrink-0"
-            title="Click to redirect to YouTube"
-          >
-            <div className="relative w-40 h-40 sm:w-44 sm:h-44 rounded-3xl shadow-2xl border-2 border-rose-500/30 overflow-hidden group-hover:border-rose-400/60 transition-all">
+        {/* Dedicated Song Photo + Single YouTube Link Section at the Bottom */}
+        <div className="romantic-card rounded-3xl p-6 sm:p-8 flex flex-col items-center text-center gap-5">
+          {/* Photo Above the YouTube Link (Acoustic Melody Cover or Custom Photo) */}
+          <div className="relative flex flex-col items-center gap-3">
+            <div className="relative w-48 h-48 sm:w-56 sm:h-56 rounded-3xl shadow-2xl border-2 border-rose-500/35 overflow-hidden bg-black/40">
               <img
-                src={austinCover}
-                alt={`${songConfig.artistName} - ${songConfig.songTitle} cover art`}
-                className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
+                src={activeCoverPhoto || austinCover}
+                alt={`${songConfig.artistName} - ${songConfig.songTitle} cover photo`}
+                referrerPolicy="no-referrer"
+                className="w-full h-full object-cover"
               />
-              {/* Play overlay on hover */}
-              <div className="absolute inset-0 bg-red-950/50 flex flex-col items-center justify-center gap-2 opacity-90 group-hover:opacity-100 group-hover:bg-red-950/40 transition-all">
-                <div className="w-12 h-12 rounded-full bg-red-600 text-white flex items-center justify-center shadow-xl group-hover:scale-110 transition-transform">
-                  <Youtube className="w-7 h-7 fill-current ml-0.5" />
+              {isUpdatingPhoto && (
+                <div className="absolute inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center">
+                  <Loader2 className="w-7 h-7 animate-spin text-rose-300" />
                 </div>
-                <span className="text-[11px] font-semibold text-white px-2.5 py-1 rounded-full bg-black/60 backdrop-blur-sm flex items-center gap-1">
-                  <span>Open YouTube</span>
-                  <ExternalLink className="w-3 h-3" />
-                </span>
-              </div>
+              )}
             </div>
-          </a>
 
-          <div className="flex-1 text-center sm:text-left">
+            {isOwner && onUpdateSong && (
+              <div className="flex flex-wrap items-center justify-center gap-2">
+                <button
+                  type="button"
+                  disabled={isUpdatingPhoto}
+                  onClick={() => setIsPhotoPickerOpen((prev) => !prev)}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-rose-950/75 hover:bg-rose-900/75 border border-rose-500/30 text-xs font-semibold text-rose-100 transition-colors cursor-pointer disabled:opacity-50"
+                >
+                  <ImagePlus className="w-3.5 h-3.5 text-rose-300" />
+                  <span>{hasCustomPhoto ? 'Change Photo' : 'Add Photo'}</span>
+                </button>
+
+                {hasCustomPhoto && (
+                  <button
+                    type="button"
+                    disabled={isUpdatingPhoto}
+                    onClick={() => void handleResetPhoto()}
+                    className="inline-flex items-center gap-1 px-3 py-1.5 rounded-xl bg-black/40 hover:bg-black/60 border border-rose-500/20 text-xs text-rose-300 hover:text-white transition-colors cursor-pointer disabled:opacity-50"
+                  >
+                    <RotateCcw className="w-3 h-3" />
+                    <span>Reset</span>
+                  </button>
+                )}
+              </div>
+            )}
+
+            {isOwner && isPhotoPickerOpen && (
+              <div className="w-full max-w-md rounded-2xl bg-[#1a0308]/95 border border-rose-500/30 p-4 text-left space-y-3 shadow-2xl">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-semibold text-rose-200">
+                    Choose Photo Above YouTube Link
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setIsPhotoPickerOpen(false)}
+                    className="p-1 rounded-lg text-rose-300/75 hover:text-white hover:bg-rose-950/70 cursor-pointer"
+                    aria-label="Close photo picker"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+
+                <button
+                  type="button"
+                  disabled={isUpdatingPhoto}
+                  onClick={() => fileInputRef.current?.click()}
+                  className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-rose-600 to-red-700 hover:from-rose-500 hover:to-red-600 text-xs font-semibold text-white shadow-lg transition-all cursor-pointer disabled:opacity-60"
+                >
+                  <Upload className="w-3.5 h-3.5" />
+                  <span>Upload Photo from Device</span>
+                </button>
+
+                {albumPhotos.length > 0 && (
+                  <div className="space-y-2 pt-1">
+                    <p className="text-[11px] text-rose-300/80 font-medium">
+                      Or select a photo from Tsi&apos;s album:
+                    </p>
+                    <div className="grid grid-cols-4 gap-2 max-h-40 overflow-y-auto pr-1">
+                      {albumPhotos.map((photo) => (
+                        <button
+                          key={photo.id}
+                          type="button"
+                          disabled={isUpdatingPhoto}
+                          onClick={() => void handleSelectAlbumPhoto(photo)}
+                          className={`relative aspect-square rounded-xl overflow-hidden border-2 transition-all cursor-pointer disabled:opacity-50 ${
+                            activeCoverPhoto === photo.url
+                              ? 'border-amber-300 ring-2 ring-amber-300/40'
+                              : 'border-rose-500/25 hover:border-rose-400'
+                          }`}
+                          title={photo.caption || photo.title}
+                        >
+                          <img
+                            src={photo.url}
+                            alt={photo.caption || photo.title}
+                            referrerPolicy="no-referrer"
+                            className="w-full h-full object-cover"
+                          />
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {photoError && (
+                  <p className="text-xs text-red-300 bg-red-950/60 border border-red-500/35 rounded-xl p-2.5">
+                    {photoError}
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
+
+          <div className="w-full max-w-xl text-center">
             <span className="text-[11px] font-semibold text-rose-400 uppercase tracking-widest block mb-1">
               {songConfig.artistName} · Official Music
             </span>
@@ -483,7 +716,7 @@ export const SongPage: React.FC<SongPageProps> = ({
               Now that you&apos;ve read every word, tap below to listen on YouTube.
             </p>
 
-            <div className="flex flex-wrap items-center justify-center sm:justify-start gap-3">
+            <div className="flex flex-wrap items-center justify-center gap-3">
               <a
                 href={songConfig.youtubeUrl}
                 target="_blank"

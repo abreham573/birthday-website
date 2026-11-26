@@ -56,10 +56,7 @@ export const AddMediaModal: React.FC<AddMediaModalProps> = ({
   const [sourceMode, setSourceMode] = useState<'upload' | 'url'>('upload');
   const [urlInput, setUrlInput] = useState('');
   const [selectedItems, setSelectedItems] = useState<SelectedMediaFile[]>([]);
-  const [title, setTitle] = useState('');
   const [caption, setCaption] = useState('');
-  const [date, setDate] = useState('Birthday Special');
-  const [tag, setTag] = useState('Birthday Special');
   const [isUploading, setIsUploading] = useState<boolean>(false);
   const [uploadStatus, setUploadStatus] = useState<string>('');
   const [authLoading, setAuthLoading] = useState<boolean>(false);
@@ -182,13 +179,6 @@ export const AddMediaModal: React.FC<AddMediaModalProps> = ({
       try {
         for (let i = 0; i < selectedItems.length; i++) {
           const { file } = selectedItems[i];
-          const itemTitle =
-            selectedItems.length === 1
-              ? title.trim() || 'My Beautiful Tsi ❤️'
-              : title.trim()
-                ? `${title.trim()} (${i + 1})`
-                : `Tsi Memory #${i + 1}`;
-
           setUploadStatus(
             `Saving ${i + 1} of ${selectedItems.length} to cloud...`
           );
@@ -196,10 +186,10 @@ export const AddMediaModal: React.FC<AddMediaModalProps> = ({
           const savedItem = await uploadMemoryFileToFirestore({
             file,
             mediaType,
-            title: itemTitle,
-            caption: caption.trim() || 'A cherished memory of my love, Tsi.',
-            date: date.trim() || 'Special Moment',
-            tag: tag.trim() || 'Birthday Special',
+            title: 'Tsi',
+            caption: caption.trim(),
+            date: '',
+            tag: '',
             authorId: user.uid,
           });
 
@@ -251,10 +241,10 @@ export const AddMediaModal: React.FC<AddMediaModalProps> = ({
         const savedItem = await saveMemoryUrlToFirestore({
           url: urlInput.trim(),
           mediaType,
-          title: title.trim() || 'Beautiful Tsi ❤️',
-          caption: caption.trim() || 'A cherished memory of my love.',
-          date: date.trim() || 'Special Memory',
-          tag: tag.trim() || 'Birthday Special',
+          title: 'Tsi',
+          caption: caption.trim(),
+          date: '',
+          tag: '',
           authorId: user.uid,
         });
 
@@ -281,10 +271,7 @@ export const AddMediaModal: React.FC<AddMediaModalProps> = ({
   const handleReset = () => {
     setUrlInput('');
     clearSelectedItems();
-    setTitle('');
     setCaption('');
-    setDate('Birthday Special');
-    setTag('Birthday Special');
     setError(null);
     setIsUploading(false);
     setUploadStatus('');
@@ -588,59 +575,10 @@ export const AddMediaModal: React.FC<AddMediaModalProps> = ({
               </div>
             )}
 
-            {/* Title */}
-            <div>
-              <label className="block text-xs font-medium text-rose-300/80 mb-1">
-                Title
-              </label>
-              <input
-                type="text"
-                placeholder="e.g. My Sunshine Tsi, Beautiful Laugh..."
-                value={title}
-                onChange={(e) => setTitle(e.target.value)}
-                disabled={isUploading}
-                className="w-full bg-rose-950/50 border border-rose-500/30 rounded-xl px-3.5 py-2.5 text-xs text-white placeholder-rose-400/40 focus:outline-none focus:border-rose-400"
-              />
-            </div>
-
-            {/* Date & Tag Grid */}
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="block text-xs font-medium text-rose-300/80 mb-1">
-                  Date / Occasion
-                </label>
-                <input
-                  type="text"
-                  placeholder="e.g. Birthday Special, Summer"
-                  value={date}
-                  onChange={(e) => setDate(e.target.value)}
-                  disabled={isUploading}
-                  className="w-full bg-rose-950/50 border border-rose-500/30 rounded-xl px-3 py-2 text-xs text-white placeholder-rose-400/40 focus:outline-none focus:border-rose-400"
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-rose-300/80 mb-1">
-                  Category
-                </label>
-                <select
-                  value={tag}
-                  onChange={(e) => setTag(e.target.value)}
-                  disabled={isUploading}
-                  className="w-full bg-[#1b0207] border border-rose-500/30 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-rose-400"
-                >
-                  <option value="Birthday Special">Birthday Special</option>
-                  <option value="Sweet Moments">Sweet Moments</option>
-                  <option value="Our Firsts">Our Firsts</option>
-                  <option value="Date Nights">Date Nights</option>
-                  <option value="Adventures">Adventures</option>
-                </select>
-              </div>
-            </div>
-
             {/* Caption */}
             <div>
               <label className="block text-xs font-medium text-rose-300/80 mb-1">
-                Sweet Note / Caption (Optional)
+                Caption (Optional)
               </label>
               <textarea
                 ref={captionTextareaRef}

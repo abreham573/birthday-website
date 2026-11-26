@@ -303,6 +303,11 @@
           "maxLength": 2000,
           "description": "Optional personal meaning or explanation of the lyrics."
         },
+        "coverPhotoUrl": {
+          "type": "string",
+          "maxLength": 900000,
+          "description": "Optional custom photo path or compressed data URL displayed above the song YouTube link."
+        },
         "authorId": {
           "type": "string",
           "pattern": "^[a-zA-Z0-9_\\-]+$",

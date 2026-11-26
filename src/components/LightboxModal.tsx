@@ -12,7 +12,10 @@ import {
   Minimize2,
 } from 'lucide-react';
 import { MemoryItem } from '../types';
-import { getReadableFirestoreErrorMessage } from '../lib/memoriesService';
+import {
+  getDisplayCaption,
+  getReadableFirestoreErrorMessage,
+} from '../lib/memoriesService';
 
 interface LightboxModalProps {
   item: MemoryItem | null;
@@ -156,6 +159,7 @@ export const LightboxModal: React.FC<LightboxModalProps> = ({
 
   const isPhotoReady =
     item.type === 'photo' && Boolean(item.url) && !loadingMedia && !mediaError;
+  const displayCaption = getDisplayCaption(item);
 
   return (
     <div
@@ -323,15 +327,11 @@ export const LightboxModal: React.FC<LightboxModalProps> = ({
           )}
         </div>
 
-        {/* Caption & Metadata Info */}
+        {/* Caption Info */}
         {!isExpanded && (
           <div className="p-4 sm:p-5 bg-gradient-to-t from-[#140104] to-[#1c0207] border-t border-rose-500/15">
             <div className="flex items-center justify-between gap-4">
-              <div className="flex items-center gap-2 text-xs text-rose-300/70">
-                <span>{item.date}</span>
-                <span aria-hidden="true">·</span>
-                <span className="text-rose-400 font-medium">{item.tag}</span>
-                <span aria-hidden="true">·</span>
+              <div className="flex items-center gap-2 text-xs text-rose-300/75">
                 <span>Memory {currentIndex + 1} of {items.length}</span>
               </div>
 
@@ -375,13 +375,11 @@ export const LightboxModal: React.FC<LightboxModalProps> = ({
               </p>
             )}
 
-            <h3 className="font-serif-cormorant text-xl sm:text-2xl font-bold text-white mt-1.5">
-              {item.title}
-            </h3>
-
-            <p className="text-xs sm:text-sm text-rose-200/90 mt-1.5 leading-relaxed font-light whitespace-pre-line">
-              {item.caption}
-            </p>
+            {displayCaption && (
+              <p className="font-serif-cormorant text-base sm:text-xl font-bold text-white mt-2 leading-snug whitespace-pre-line">
+                {displayCaption}
+              </p>
+            )}
           </div>
         )}
       </div>
