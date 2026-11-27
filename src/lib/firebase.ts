@@ -164,6 +164,21 @@ async function testConnection(): Promise<void> {
     return;
   }
   try {
+    // If PostgreSQL is configured and connected, do not spend a Firestore read on boot
+    if (typeof fetch === 'function') {
+      const statusRes = await fetch('/api/db/status', { cache: 'no-store' }).catch(
+        () => null
+      );
+      if (statusRes?.ok) {
+        const statusJson = (await statusRes.json().catch(() => null)) as {
+          configured?: boolean;
+          connected?: boolean;
+        } | null;
+        if (statusJson?.configured && statusJson?.connected) {
+          return;
+        }
+      }
+    }
     await getDocFromServer(doc(db, 'test', 'connection'));
   } catch (error) {
     if (error instanceof Error) {

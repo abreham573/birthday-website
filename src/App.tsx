@@ -5,7 +5,7 @@
 
 import React, { useState, useEffect, useCallback, useRef, lazy, Suspense } from 'react';
 import { onAuthStateChanged, User } from 'firebase/auth';
-import { Lock, AlertTriangle, ExternalLink, KeyRound } from 'lucide-react';
+import { Lock, AlertTriangle, ExternalLink, KeyRound, Database } from 'lucide-react';
 import { TabType, MemoryItem, LoveLetterData, AccessGateConfig, SongConfig } from './types';
 import { INITIAL_MEMORIES } from './data/initialMemories';
 import { DEFAULT_LOVE_LETTER } from './data/defaultLetter';
@@ -37,6 +37,7 @@ import {
   getCachedLetterFallback,
   isQuotaExceededError,
 } from './lib/memoriesService';
+import { DbStatus, fetchDbStatus } from './lib/postgresService';
 import { BackgroundEffects } from './components/BackgroundEffects';
 import { PasswordGatePage } from './components/PasswordGatePage';
 import { Navbar } from './components/Navbar';
@@ -88,6 +89,7 @@ export default function App() {
   const [letterData, setLetterData] = useState<LoveLetterData>(DEFAULT_LOVE_LETTER);
   const [songConfig, setSongConfig] = useState<SongConfig>(DEFAULT_SONG_CONFIG);
   const [quotaExceeded, setQuotaExceeded] = useState<boolean>(false);
+  const [dbStatus, setDbStatus] = useState<DbStatus | null>(null);
 
   // Modals
   const [isAddModalOpen, setIsAddModalOpen] = useState<boolean>(false);
@@ -163,13 +165,31 @@ export default function App() {
     };
   }, []);
 
-  // Refresh Front-Page Password Gate config from Firestore on mount (without blocking on testConnection)
+  const isPostgresReady = Boolean(dbStatus?.configured && dbStatus?.connected);
+
+  const refreshDbStatus = useCallback(async () => {
+    const status = await fetchDbStatus(true);
+    setDbStatus(status);
+    if (status.configured && status.connected) {
+      readQuotaHitRef.current = false;
+      setQuotaExceeded(false);
+    }
+    return status;
+  }, []);
+
+  // Refresh Front-Page Password Gate config (PostgreSQL first, then fallback)
   useEffect(() => {
     let active = true;
 
     async function loadGateConfig() {
       try {
-        if (isFirestoreQuotaLocked()) {
+        const status = await fetchDbStatus();
+        if (active) {
+          setDbStatus(status);
+        }
+        const pgReady = status.configured && status.connected;
+
+        if (!pgReady && isFirestoreQuotaLocked()) {
           readQuotaHitRef.current = true;
           setQuotaExceeded(true);
           const cached = await getCachedGateConfigFallback();
@@ -177,13 +197,18 @@ export default function App() {
           return;
         }
 
+        if (pgReady) {
+          readQuotaHitRef.current = false;
+          setQuotaExceeded(false);
+        }
+
         const cloudGate = await fetchGateConfigFromFirestore().catch(async (err) => {
-          if (isQuotaExceededError(err)) {
+          if (!pgReady && isQuotaExceededError(err)) {
             readQuotaHitRef.current = true;
             lockFirestoreForQuota();
             setQuotaExceeded(true);
           } else if (!(err instanceof Error && err.message.trim().startsWith('{'))) {
-            console.error('Failed to load gate config from Firestore:', err);
+            console.error('Failed to load gate config:', err);
           }
           return await getCachedGateConfigFallback();
         });
@@ -218,7 +243,13 @@ export default function App() {
 
     async function syncMemories() {
       try {
-        if (isFirestoreQuotaLocked()) {
+        const status = await fetchDbStatus();
+        const pgReady = status.configured && status.connected;
+
+        if (pgReady) {
+          readQuotaHitRef.current = false;
+          setQuotaExceeded(false);
+        } else if (isFirestoreQuotaLocked()) {
           readQuotaHitRef.current = true;
           setQuotaExceeded(true);
         }
@@ -244,19 +275,20 @@ export default function App() {
           setIsLoadingMemories(false);
         };
 
-        const cloudMemories = readQuotaHitRef.current
-          ? null
-          : await fetchMemoriesFromFirestore({
-              onPartialBatch: applyBatchToState,
-            }).catch((err) => {
-              if (isQuotaExceededError(err)) {
-                readQuotaHitRef.current = true;
-                setQuotaExceeded(true);
-              } else if (!(err instanceof Error && err.message.trim().startsWith('{'))) {
-                console.error('Failed to load memories from Firestore:', err);
-              }
-              return null;
-            });
+        const cloudMemories =
+          !pgReady && readQuotaHitRef.current
+            ? null
+            : await fetchMemoriesFromFirestore({
+                onPartialBatch: applyBatchToState,
+              }).catch((err) => {
+                if (!pgReady && isQuotaExceededError(err)) {
+                  readQuotaHitRef.current = true;
+                  setQuotaExceeded(true);
+                } else if (!(err instanceof Error && err.message.trim().startsWith('{'))) {
+                  console.error('Failed to load memories:', err);
+                }
+                return null;
+              });
 
         if (!active) return;
 
@@ -338,22 +370,26 @@ export default function App() {
     }
 
     async function syncLetter() {
-      if (isFirestoreQuotaLocked()) {
+      const status = await fetchDbStatus();
+      const pgReady = status.configured && status.connected;
+
+      if (!pgReady && isFirestoreQuotaLocked()) {
         readQuotaHitRef.current = true;
         setQuotaExceeded(true);
       }
 
-      const cloudLetter = readQuotaHitRef.current
-        ? await getCachedLetterFallback()
-        : await fetchLetterFromFirestore().catch(async (err) => {
-            if (isQuotaExceededError(err)) {
-              readQuotaHitRef.current = true;
-              setQuotaExceeded(true);
-            } else if (!(err instanceof Error && err.message.trim().startsWith('{'))) {
-              console.error('Failed to load letter from Firestore:', err);
-            }
-            return await getCachedLetterFallback();
-          });
+      const cloudLetter =
+        !pgReady && readQuotaHitRef.current
+          ? await getCachedLetterFallback()
+          : await fetchLetterFromFirestore().catch(async (err) => {
+              if (!pgReady && isQuotaExceededError(err)) {
+                readQuotaHitRef.current = true;
+                setQuotaExceeded(true);
+              } else if (!(err instanceof Error && err.message.trim().startsWith('{'))) {
+                console.error('Failed to load letter:', err);
+              }
+              return await getCachedLetterFallback();
+            });
 
       if (!active) return;
       if (cloudLetter) {
@@ -363,22 +399,26 @@ export default function App() {
     }
 
     async function syncSong() {
-      if (isFirestoreQuotaLocked()) {
+      const status = await fetchDbStatus();
+      const pgReady = status.configured && status.connected;
+
+      if (!pgReady && isFirestoreQuotaLocked()) {
         readQuotaHitRef.current = true;
         setQuotaExceeded(true);
       }
 
-      const cloudSong = readQuotaHitRef.current
-        ? await getCachedSongConfigFallback()
-        : await fetchSongConfigFromFirestore().catch(async (err) => {
-            if (isQuotaExceededError(err)) {
-              readQuotaHitRef.current = true;
-              setQuotaExceeded(true);
-            } else if (!(err instanceof Error && err.message.trim().startsWith('{'))) {
-              console.error('Failed to load song config from Firestore:', err);
-            }
-            return await getCachedSongConfigFallback();
-          });
+      const cloudSong =
+        !pgReady && readQuotaHitRef.current
+          ? await getCachedSongConfigFallback()
+          : await fetchSongConfigFromFirestore().catch(async (err) => {
+              if (!pgReady && isQuotaExceededError(err)) {
+                readQuotaHitRef.current = true;
+                setQuotaExceeded(true);
+              } else if (!(err instanceof Error && err.message.trim().startsWith('{'))) {
+                console.error('Failed to load song config:', err);
+              }
+              return await getCachedSongConfigFallback();
+            });
 
       if (!active) return;
       if (cloudSong) {
@@ -449,7 +489,7 @@ export default function App() {
     await signOutOwner();
   };
 
-  // Save custom front-page password & hint to Firestore
+  // Save custom front-page password & hint
   const handleSaveGateConfig = async (params: {
     newPassword?: string;
     hint: string;
@@ -459,10 +499,12 @@ export default function App() {
     if (!user || !isOwner) {
       throw new Error('Please sign in with the creator Google account to update the password.');
     }
-    if (isFirestoreQuotaLocked()) {
+    const status = await fetchDbStatus();
+    const pgReady = status.configured && status.connected;
+    if (!pgReady && isFirestoreQuotaLocked()) {
       setQuotaExceeded(true);
       throw new Error(
-        'Daily free database quota limit reached. Free limits reset tomorrow, or you can upgrade in Firebase Console.'
+        'Daily free database quota limit reached. Add DATABASE_URL in Settings -> Secrets to save to PostgreSQL instead.'
       );
     }
     try {
@@ -473,7 +515,7 @@ export default function App() {
       });
       setGateConfig(updated);
     } catch (err) {
-      if (isQuotaExceededError(err)) {
+      if (!pgReady && isQuotaExceededError(err)) {
         lockFirestoreForQuota();
         setQuotaExceeded(true);
       }
@@ -481,22 +523,24 @@ export default function App() {
     }
   };
 
-  // Save letter to Firestore when signed in as owner
+  // Save letter when signed in as owner
   const handleUpdateLetter = async (updated: LoveLetterData) => {
     if (!user || !isOwner) {
       throw new Error('Please sign in with the creator Google account to save changes.');
     }
-    if (isFirestoreQuotaLocked()) {
+    const status = await fetchDbStatus();
+    const pgReady = status.configured && status.connected;
+    if (!pgReady && isFirestoreQuotaLocked()) {
       setQuotaExceeded(true);
       throw new Error(
-        'Daily free database quota limit reached. Free limits reset tomorrow, or you can upgrade in Firebase Console.'
+        'Daily free database quota limit reached. Add DATABASE_URL in Settings -> Secrets to save to PostgreSQL instead.'
       );
     }
     try {
       const saved = await saveLetterToFirestore(updated, user.uid);
       setLetterData(saved);
     } catch (err) {
-      if (isQuotaExceededError(err)) {
+      if (!pgReady && isQuotaExceededError(err)) {
         lockFirestoreForQuota();
         setQuotaExceeded(true);
       }
@@ -504,22 +548,24 @@ export default function App() {
     }
   };
 
-  // Save song dedication, lyrics & meaning to Firestore when signed in as owner
+  // Save song dedication, lyrics & meaning when signed in as owner
   const handleUpdateSong = async (updated: SongConfig) => {
     if (!user || !isOwner) {
       throw new Error('Please sign in with the creator Google account to save changes.');
     }
-    if (isFirestoreQuotaLocked()) {
+    const status = await fetchDbStatus();
+    const pgReady = status.configured && status.connected;
+    if (!pgReady && isFirestoreQuotaLocked()) {
       setQuotaExceeded(true);
       throw new Error(
-        'Daily free database quota limit reached. Free limits reset tomorrow, or you can upgrade in Firebase Console.'
+        'Daily free database quota limit reached. Add DATABASE_URL in Settings -> Secrets to save to PostgreSQL instead.'
       );
     }
     try {
       const saved = await saveSongConfigToFirestore(updated, user.uid);
       setSongConfig(saved);
     } catch (err) {
-      if (isQuotaExceededError(err)) {
+      if (!pgReady && isQuotaExceededError(err)) {
         lockFirestoreForQuota();
         setQuotaExceeded(true);
       }
@@ -527,9 +573,10 @@ export default function App() {
     }
   };
 
-  // Add new photo or video to UI state (already persisted to Firestore by AddMediaModal)
+  // Add new photo or video to UI state
   const handleAddMemory = (newItem: MemoryItem) => {
     setMemories((prev) => [newItem, ...prev.filter((m) => m.id !== newItem.id)]);
+    void refreshDbStatus();
   };
 
   // Add multiple photos or videos to UI state
@@ -538,6 +585,7 @@ export default function App() {
       ...newItems,
       ...prev.filter((m) => !newItems.some((n) => n.id === m.id)),
     ]);
+    void refreshDbStatus();
   };
 
   // Update title/caption/date/tag on an existing memory
@@ -551,10 +599,12 @@ export default function App() {
     if (!isOwner) {
       throw new Error('Please sign in with the creator Google account to edit captions.');
     }
-    if (isFirestoreQuotaLocked()) {
+    const status = await fetchDbStatus();
+    const pgReady = status.configured && status.connected;
+    if (!pgReady && isFirestoreQuotaLocked()) {
       setQuotaExceeded(true);
       throw new Error(
-        'Daily free database quota limit reached. Free limits reset tomorrow, or you can upgrade in Firebase Console.'
+        'Daily free database quota limit reached. Add DATABASE_URL in Settings -> Secrets to save to PostgreSQL instead.'
       );
     }
     try {
@@ -572,7 +622,7 @@ export default function App() {
         prev && prev.id === params.id ? { ...prev, ...updated } : prev
       );
     } catch (err) {
-      if (isQuotaExceededError(err)) {
+      if (!pgReady && isQuotaExceededError(err)) {
         lockFirestoreForQuota();
         setQuotaExceeded(true);
       }
@@ -580,15 +630,17 @@ export default function App() {
     }
   };
 
-  // Delete memory permanently from Firestore
+  // Delete memory permanently
   const handleDeleteMemory = async (id: string) => {
     if (!isOwner) {
       throw new Error('Please sign in with the creator Google account to remove memories.');
     }
-    if (isFirestoreQuotaLocked()) {
+    const status = await fetchDbStatus();
+    const pgReady = status.configured && status.connected;
+    if (!pgReady && isFirestoreQuotaLocked()) {
       setQuotaExceeded(true);
       throw new Error(
-        'Daily free database quota limit reached. Free limits reset tomorrow, or you can upgrade in Firebase Console.'
+        'Daily free database quota limit reached. Add DATABASE_URL in Settings -> Secrets to save to PostgreSQL instead.'
       );
     }
     try {
@@ -600,11 +652,11 @@ export default function App() {
       setMemories((prev) => prev.filter((m) => m.id !== id));
       setSelectedLightboxItem((prev) => (prev?.id === id ? null : prev));
     } catch (err) {
-      if (isQuotaExceededError(err)) {
+      if (!pgReady && isQuotaExceededError(err)) {
         lockFirestoreForQuota();
         setQuotaExceeded(true);
       } else if (!(err instanceof Error && err.message.trim().startsWith('{'))) {
-        console.error('Failed to delete memory from Firestore:', err);
+        console.error('Failed to delete memory:', err);
       }
       throw err;
     }
@@ -615,7 +667,10 @@ export default function App() {
       readQuotaHitRef.current = false;
       hasLoadedCloudRef.current = false;
       setQuotaExceeded(false);
-      await unlockFirestoreForRetry();
+      const status = await refreshDbStatus();
+      if (!(status.configured && status.connected)) {
+        await unlockFirestoreForRetry();
+      }
       const [cloudGate, cloudMemories, cloudLetter, cloudSong] = await Promise.all([
         fetchGateConfigFromFirestore({ forceRefresh: true }),
         fetchMemoriesFromFirestore({ forceRefresh: true }),
@@ -626,7 +681,7 @@ export default function App() {
         hasFreshCloudGateRef.current = true;
         setGateConfig(cloudGate);
       }
-      if (cloudMemories) {
+      if (cloudMemories && cloudMemories.length > 0) {
         setMemories(cloudMemories);
       }
       if (cloudLetter) {
@@ -665,12 +720,12 @@ export default function App() {
 
       {!isUnlocked ? (
         <main className="relative z-10">
-          {quotaExceeded && (
+          {!isPostgresReady && quotaExceeded && (
             <div className="max-w-lg mx-auto px-4 pt-6">
               <div className="rounded-2xl bg-amber-950/70 border border-amber-500/35 p-3.5 text-xs text-amber-100 flex items-start gap-2.5 backdrop-blur-md">
                 <AlertTriangle className="w-4 h-4 text-amber-300 shrink-0 mt-0.5" />
                 <p className="text-amber-100/85 leading-relaxed">
-                  Daily free database quota limit reached. Cached items on this device still work, and free daily limits reset tomorrow.
+                  Cached items on this device still work. Connect PostgreSQL (`DATABASE_URL`) in creator settings to remove Firebase daily limits permanently.
                 </p>
               </div>
             </div>
@@ -680,6 +735,9 @@ export default function App() {
             gateConfig={gateConfig}
             isLoadingGate={isLoadingGate}
             isOwner={isOwner}
+            dbStatus={dbStatus}
+            onRefreshDbStatus={refreshDbStatus}
+            onMigrationComplete={handleRetryCloudConnection}
             onUnlock={handleUnlock}
             onEnsureGateReady={async () => {
               await gateSyncPromiseRef.current;
@@ -703,7 +761,65 @@ export default function App() {
 
           {/* Main Pages: 1. Photos & Videos, 2. Love Letter, 3. Our Song */}
           <main className="relative z-10">
-            {quotaExceeded && (
+            {isOwner && dbStatus && !isPostgresReady && (
+              <div className="max-w-4xl mx-auto px-4 sm:px-6 pt-4">
+                <div className="rounded-2xl bg-rose-950/75 border border-rose-400/35 p-4 text-xs text-rose-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3 backdrop-blur-md">
+                  <div className="flex items-start gap-2.5">
+                    <Database className="w-4 h-4 text-rose-300 shrink-0 mt-0.5" />
+                    <div>
+                      <p className="font-semibold text-white">
+                        Step 1: Add your PostgreSQL DATABASE_URL in Settings → Secrets
+                      </p>
+                      <p className="text-rose-100/80 mt-0.5 leading-relaxed">
+                        {dbStatus.configured && !dbStatus.connected
+                          ? `PostgreSQL connection failed: ${dbStatus.error || 'Verify DATABASE_URL in Settings -> Secrets.'}`
+                          : 'Paste your free Supabase or Neon PostgreSQL URL into AI Studio Secrets as DATABASE_URL, then click Refresh & Transfer to move everything off Firebase.'}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => void handleRetryCloudConnection()}
+                      className="px-3 py-2 rounded-xl bg-white/10 hover:bg-white/20 border border-rose-300/30 text-white font-semibold whitespace-nowrap transition-colors cursor-pointer"
+                    >
+                      Refresh Connection
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {isOwner &&
+              isPostgresReady &&
+              dbStatus &&
+              dbStatus.counts.memories === 0 &&
+              memories.length === 0 && (
+                <div className="max-w-4xl mx-auto px-4 sm:px-6 pt-4">
+                  <div className="rounded-2xl bg-emerald-950/70 border border-emerald-500/35 p-4 text-xs text-emerald-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3 backdrop-blur-md">
+                    <div className="flex items-start gap-2.5">
+                      <Database className="w-4 h-4 text-emerald-300 shrink-0 mt-0.5" />
+                      <div>
+                        <p className="font-semibold text-emerald-200">
+                          PostgreSQL is connected &amp; ready!
+                        </p>
+                        <p className="text-emerald-100/80 mt-0.5 leading-relaxed">
+                          Upload your photos &amp; videos directly, or transfer saved items from Firebase whenever its daily quota resets.
+                        </p>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setIsAddModalOpen(true)}
+                      className="px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold whitespace-nowrap transition-colors cursor-pointer shrink-0"
+                    >
+                      Add Photos &amp; Videos
+                    </button>
+                  </div>
+                </div>
+              )}
+
+            {!isPostgresReady && quotaExceeded && (
               <div className="max-w-4xl mx-auto px-4 sm:px-6 pt-4">
                 <div className="rounded-2xl bg-amber-950/70 border border-amber-500/35 p-4 text-xs text-amber-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3 backdrop-blur-md">
                   <div className="flex items-start gap-2.5">
@@ -713,7 +829,7 @@ export default function App() {
                         Daily free Firestore quota limit reached
                       </p>
                       <p className="text-amber-100/80 mt-0.5 leading-relaxed">
-                        Free daily database read/write limits reset tomorrow. Cached items on this device still load offline, or you can upgrade your database quota in Firebase Console.
+                        Free daily database read/write limits reset tomorrow. Cached items on this device still load offline, or connect PostgreSQL above to remove daily read limits forever.
                       </p>
                     </div>
                   </div>
@@ -811,6 +927,9 @@ export default function App() {
                 onAdd={handleAddMemory}
                 onAddMultiple={handleAddMultipleMemories}
                 onQuotaExceeded={() => setQuotaExceeded(true)}
+                dbStatus={dbStatus}
+                onRefreshDbStatus={refreshDbStatus}
+                onMigrationComplete={handleRetryCloudConnection}
                 user={user}
                 isOwner={isOwner}
                 onSignInOwner={handleSignInOwner}

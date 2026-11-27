@@ -10,14 +10,24 @@ import {
   Loader2,
   Check,
   ArrowRight,
+  Database,
+  RefreshCw,
 } from 'lucide-react';
 import { AccessGateConfig } from '../types';
 import { getReadableFirestoreErrorMessage, hashGatePassword } from '../lib/memoriesService';
+import {
+  DbStatus,
+  migrateFirebaseToPostgres,
+  MigrationResult,
+} from '../lib/postgresService';
 
 interface PasswordGatePageProps {
   gateConfig: AccessGateConfig;
   isLoadingGate: boolean;
   isOwner: boolean;
+  dbStatus?: DbStatus | null;
+  onRefreshDbStatus?: () => Promise<DbStatus>;
+  onMigrationComplete?: () => Promise<void> | void;
   onUnlock: () => void;
   onEnsureGateReady?: () => Promise<AccessGateConfig>;
   onSignInOwner: () => Promise<void>;
@@ -33,6 +43,9 @@ interface PasswordGatePageProps {
 export const PasswordGatePage: React.FC<PasswordGatePageProps> = ({
   gateConfig,
   isOwner,
+  dbStatus,
+  onRefreshDbStatus,
+  onMigrationComplete,
   onUnlock,
   onEnsureGateReady,
   onSignInOwner,
@@ -57,6 +70,31 @@ export const PasswordGatePage: React.FC<PasswordGatePageProps> = ({
   const [saveStatus, setSaveStatus] = useState<{ type: 'success' | 'error'; text: string } | null>(
     null
   );
+  const [isMigrating, setIsMigrating] = useState<boolean>(false);
+  const [migrationStatus, setMigrationStatus] = useState<string>('');
+  const [migrationResult, setMigrationResult] = useState<MigrationResult | null>(null);
+  const [migrationError, setMigrationError] = useState<string | null>(null);
+
+  const isPostgresReady = Boolean(dbStatus?.configured && dbStatus?.connected);
+
+  const handleRunMigration = async () => {
+    setMigrationError(null);
+    setMigrationResult(null);
+    setIsMigrating(true);
+    setMigrationStatus('Preparing transfer from Firebase...');
+    try {
+      const res = await migrateFirebaseToPostgres((msg) => setMigrationStatus(msg));
+      setMigrationResult(res);
+      await onMigrationComplete?.();
+    } catch (err) {
+      setMigrationError(
+        err instanceof Error ? err.message : 'Transfer could not complete right now.'
+      );
+    } finally {
+      setIsMigrating(false);
+      setMigrationStatus('');
+    }
+  };
 
   const shakeTimerRef = useRef<number | null>(null);
   const unlockTimerRef = useRef<number | null>(null);
@@ -417,6 +455,85 @@ export const PasswordGatePage: React.FC<PasswordGatePageProps> = ({
                     )}
                     <span>{isSavingGate ? 'Saving...' : 'Save Password & Hint'}</span>
                   </button>
+
+                  {/* Database Transfer Tool in Front-Page Creator Settings */}
+                  <div className="mt-3 pt-3 border-t border-rose-500/20 space-y-2">
+                    <div className="flex items-center justify-between text-xs text-rose-100 font-semibold">
+                      <span className="inline-flex items-center gap-1.5">
+                        <Database className="w-3.5 h-3.5 text-rose-300" />
+                        <span>
+                          {isPostgresReady
+                            ? 'PostgreSQL Connected'
+                            : 'Switch Database to PostgreSQL'}
+                        </span>
+                      </span>
+                      {onRefreshDbStatus && (
+                        <button
+                          type="button"
+                          disabled={isMigrating}
+                          onClick={() => void onRefreshDbStatus()}
+                          className="inline-flex items-center gap-1 text-[11px] text-rose-300 hover:text-white cursor-pointer"
+                        >
+                          <RefreshCw className="w-3 h-3" />
+                          <span>Refresh</span>
+                        </button>
+                      )}
+                    </div>
+
+                    {!isPostgresReady ? (
+                      <p className="text-[11px] text-rose-200/80 leading-relaxed">
+                        {dbStatus?.configured && !dbStatus?.connected
+                          ? `Connection error: ${dbStatus.error || 'Verify DATABASE_URL in Settings -> Secrets.'}`
+                          : 'Add your free Supabase or Neon connection string as DATABASE_URL in Settings -> Secrets, then click Refresh to transfer everything from Firebase.'}
+                      </p>
+                    ) : (
+                      <div className="space-y-2">
+                        <button
+                          type="button"
+                          disabled={isMigrating}
+                          onClick={() => void handleRunMigration()}
+                          className="w-full min-h-[40px] px-3 py-2 bg-emerald-600/85 hover:bg-emerald-500 text-white rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer disabled:opacity-60"
+                        >
+                          {isMigrating ? (
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          ) : (
+                            <Database className="w-3.5 h-3.5" />
+                          )}
+                          <span>
+                            {isMigrating
+                              ? migrationStatus || 'Transferring...'
+                              : 'Transfer Photos, Videos & Letter from Firebase'}
+                          </span>
+                        </button>
+                        {migrationResult && (
+                          <div className="space-y-1.5">
+                            <p className="text-[11px] text-emerald-200 bg-emerald-950/70 border border-emerald-500/35 rounded-lg p-2">
+                              Transferred {migrationResult.memoriesTransferred} of{' '}
+                              {migrationResult.memoriesTotalFound} photos/videos
+                              {migrationResult.letterTransferred ? ', letter' : ''}
+                              {migrationResult.songTransferred ? ', song' : ''}
+                              {migrationResult.gateTransferred ? ', password' : ''}.
+                            </p>
+                            {migrationResult.firestoreBlockedByQuota && (
+                              <p className="text-[11px] text-amber-200 bg-amber-950/70 border border-amber-500/35 rounded-lg p-2 leading-relaxed">
+                                Firebase&apos;s free daily limit is still blocking reads right now. Try again tomorrow right after Firebase resets, or transfer from the device/browser where you uploaded them.
+                              </p>
+                            )}
+                            {migrationResult.errors.length > 0 && (
+                              <p className="text-[11px] text-red-200 bg-red-950/70 border border-red-500/35 rounded-lg p-2">
+                                {migrationResult.errors[0]}
+                              </p>
+                            )}
+                          </div>
+                        )}
+                        {migrationError && (
+                          <p className="text-[11px] text-red-200 bg-red-950/70 border border-red-500/35 rounded-lg p-2">
+                            {migrationError}
+                          </p>
+                        )}
+                      </div>
+                    )}
+                  </div>
                 </form>
               )}
             </div>

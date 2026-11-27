@@ -11,6 +11,8 @@ import {
   Sparkles,
   Lock,
   LogOut,
+  Database,
+  RefreshCw,
 } from 'lucide-react';
 import { User } from 'firebase/auth';
 import { MemoryItem } from '../types';
@@ -20,6 +22,11 @@ import {
   isQuotaExceededError,
   getReadableFirestoreErrorMessage,
 } from '../lib/memoriesService';
+import {
+  DbStatus,
+  migrateFirebaseToPostgres,
+  MigrationResult,
+} from '../lib/postgresService';
 import { isFirestoreQuotaLocked, OWNER_EMAIL } from '../lib/firebase';
 import { EmojiQuickPicker, insertTextAtCursor } from './EmojiQuickPicker';
 
@@ -29,6 +36,9 @@ interface AddMediaModalProps {
   onAdd: (item: MemoryItem) => void;
   onAddMultiple?: (items: MemoryItem[]) => void;
   onQuotaExceeded?: () => void;
+  dbStatus?: DbStatus | null;
+  onMigrationComplete?: () => Promise<void> | void;
+  onRefreshDbStatus?: () => Promise<DbStatus>;
   user: User | null;
   isOwner: boolean;
   onSignInOwner: () => Promise<void>;
@@ -47,6 +57,9 @@ export const AddMediaModal: React.FC<AddMediaModalProps> = ({
   onAdd,
   onAddMultiple,
   onQuotaExceeded,
+  dbStatus,
+  onMigrationComplete,
+  onRefreshDbStatus,
   user,
   isOwner,
   onSignInOwner,
@@ -61,6 +74,10 @@ export const AddMediaModal: React.FC<AddMediaModalProps> = ({
   const [uploadStatus, setUploadStatus] = useState<string>('');
   const [authLoading, setAuthLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
+  const [isMigrating, setIsMigrating] = useState<boolean>(false);
+  const [migrationStatus, setMigrationStatus] = useState<string>('');
+  const [migrationResult, setMigrationResult] = useState<MigrationResult | null>(null);
+  const [migrationError, setMigrationError] = useState<string | null>(null);
 
   const selectedItemsRef = useRef<SelectedMediaFile[]>(selectedItems);
   const captionTextareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -106,11 +123,19 @@ export const AddMediaModal: React.FC<AddMediaModalProps> = ({
     const nextItems: SelectedMediaFile[] = [];
 
     for (const file of fileList) {
-      if (mediaType === 'photo' && !file.type.startsWith('image/')) {
+      const isImageFile =
+        file.type.startsWith('image/') ||
+        (!file.type && /\.(jpe?g|png|webp|gif|heic|heif|bmp)$/i.test(file.name));
+      const isVideoFile =
+        file.type.startsWith('video/') ||
+        ((!file.type || file.type === 'application/octet-stream') &&
+          /\.(mp4|mov|webm|m4v|3gp|mkv)$/i.test(file.name));
+
+      if (mediaType === 'photo' && !isImageFile) {
         setError('Please select image files (JPG, PNG, WebP, GIF).');
         continue;
       }
-      if (mediaType === 'video' && !file.type.startsWith('video/')) {
+      if (mediaType === 'video' && !isVideoFile) {
         setError('Please select video files (MP4, WebM, MOV).');
         continue;
       }
@@ -150,6 +175,27 @@ export const AddMediaModal: React.FC<AddMediaModalProps> = ({
     }
   };
 
+  const isPostgresReady = Boolean(dbStatus?.configured && dbStatus?.connected);
+
+  const handleRunMigration = async () => {
+    setMigrationError(null);
+    setMigrationResult(null);
+    setIsMigrating(true);
+    setMigrationStatus('Preparing transfer from Firebase...');
+    try {
+      const res = await migrateFirebaseToPostgres((msg) => setMigrationStatus(msg));
+      setMigrationResult(res);
+      await onMigrationComplete?.();
+    } catch (err) {
+      setMigrationError(
+        err instanceof Error ? err.message : 'Transfer could not complete right now.'
+      );
+    } finally {
+      setIsMigrating(false);
+      setMigrationStatus('');
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
@@ -158,10 +204,19 @@ export const AddMediaModal: React.FC<AddMediaModalProps> = ({
       setError('Please sign in with the owner Google account first.');
       return;
     }
-    if (isFirestoreQuotaLocked()) {
+
+    const activeStatus =
+      dbStatus?.configured && dbStatus?.connected
+        ? dbStatus
+        : onRefreshDbStatus
+          ? await onRefreshDbStatus()
+          : dbStatus;
+    const pgReady = Boolean(activeStatus?.configured && activeStatus?.connected);
+
+    if (!pgReady && isFirestoreQuotaLocked()) {
       onQuotaExceeded?.();
       setError(
-        'Daily free database quota limit reached. Free limits reset tomorrow, or you can upgrade in Firebase Console.'
+        'PostgreSQL DATABASE_URL is not connected yet, and Firebase free daily quota is full. Add DATABASE_URL in Settings -> Secrets to upload without limits.'
       );
       return;
     }
@@ -191,6 +246,11 @@ export const AddMediaModal: React.FC<AddMediaModalProps> = ({
             date: '',
             tag: '',
             authorId: user.uid,
+            onProgress: (pct) => {
+              setUploadStatus(
+                `Saving ${i + 1} of ${selectedItems.length} to cloud (${pct}%)...`
+              );
+            },
           });
 
           uploadedItems.push(savedItem);
@@ -376,10 +436,103 @@ export const AddMediaModal: React.FC<AddMediaModalProps> = ({
               <button
                 type="button"
                 onClick={onSignOutOwner}
-                className="text-rose-400 hover:text-white underline"
+                className="text-rose-400 hover:text-white underline cursor-pointer"
               >
                 Sign out
               </button>
+            </div>
+
+            {/* PostgreSQL Database Status & Firebase Transfer Tool */}
+            <div className="rounded-2xl bg-black/35 border border-rose-500/25 p-3.5 space-y-2.5 text-xs">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2 font-semibold text-rose-100">
+                  <Database className="w-4 h-4 text-rose-300 shrink-0" />
+                  <span>
+                    {isPostgresReady
+                      ? 'PostgreSQL Database Connected'
+                      : 'Connect Free PostgreSQL (Supabase / Neon)'}
+                  </span>
+                </div>
+                {onRefreshDbStatus && (
+                  <button
+                    type="button"
+                    disabled={isMigrating}
+                    onClick={() => void onRefreshDbStatus()}
+                    className="inline-flex items-center gap-1 text-[11px] text-rose-300 hover:text-white cursor-pointer disabled:opacity-50"
+                  >
+                    <RefreshCw className="w-3 h-3" />
+                    <span>Refresh</span>
+                  </button>
+                )}
+              </div>
+
+              {!isPostgresReady ? (
+                <p className="text-[11px] text-rose-200/80 leading-relaxed">
+                  {dbStatus?.configured && !dbStatus?.connected
+                    ? `Could not connect yet: ${dbStatus.error || 'Check DATABASE_URL in Settings -> Secrets.'}`
+                    : 'Add your Supabase or Neon PostgreSQL URL as DATABASE_URL in Settings -> Secrets, then click Refresh to transfer all photos, videos, letter & song from Firebase.'}
+                </p>
+              ) : (
+                <div className="space-y-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="text-[11px] text-emerald-200/90">
+                      Saved in Postgres: {dbStatus?.counts.memories ?? 0} photos/videos
+                      {dbStatus?.counts.hasLetter ? ' · Letter ✓' : ''}
+                      {dbStatus?.counts.hasSong ? ' · Song ✓' : ''}
+                    </span>
+                    <button
+                      type="button"
+                      disabled={isMigrating || isUploading}
+                      onClick={() => void handleRunMigration()}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600/85 hover:bg-emerald-500 text-white text-[11px] font-semibold transition-colors cursor-pointer disabled:opacity-60"
+                    >
+                      {isMigrating ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <Database className="w-3.5 h-3.5" />
+                      )}
+                      <span>
+                        {isMigrating ? 'Transferring...' : 'Transfer from Firebase'}
+                      </span>
+                    </button>
+                  </div>
+
+                  {migrationStatus && (
+                    <p className="text-[11px] text-amber-200">{migrationStatus}</p>
+                  )}
+
+                  {migrationResult && (
+                    <div className="space-y-1.5">
+                      <p className="text-[11px] text-emerald-200 bg-emerald-950/60 border border-emerald-500/30 rounded-lg p-2">
+                        Transferred {migrationResult.memoriesTransferred} of{' '}
+                        {migrationResult.memoriesTotalFound} photos/videos
+                        {migrationResult.letterTransferred ? ', love letter' : ''}
+                        {migrationResult.songTransferred ? ', our song' : ''}
+                        {migrationResult.gateTransferred ? ', password gate' : ''}.
+                        {migrationResult.skippedDueToQuota > 0
+                          ? ` (${migrationResult.skippedDueToQuota} item(s) could not be read because Firebase's daily limit is still active.)`
+                          : ''}
+                      </p>
+                      {migrationResult.firestoreBlockedByQuota && (
+                        <p className="text-[11px] text-amber-200 bg-amber-950/60 border border-amber-500/35 rounded-lg p-2 leading-relaxed">
+                          Firebase&apos;s free daily read quota is currently still maxed out, so Firebase blocked reading uncached photos/videos right now. Run Transfer from Firebase again tomorrow after Firebase&apos;s daily quota resets (or open this page on the browser/phone where you originally uploaded them to transfer from local cache now).
+                        </p>
+                      )}
+                      {migrationResult.errors.length > 0 && (
+                        <p className="text-[11px] text-red-200 bg-red-950/60 border border-red-500/35 rounded-lg p-2">
+                          {migrationResult.errors[0]}
+                        </p>
+                      )}
+                    </div>
+                  )}
+
+                  {migrationError && (
+                    <p className="text-[11px] text-red-300 bg-red-950/60 border border-red-500/30 rounded-lg p-2">
+                      {migrationError}
+                    </p>
+                  )}
+                </div>
+              )}
             </div>
 
             {/* Media Type Selector */}
@@ -539,7 +692,9 @@ export const AddMediaModal: React.FC<AddMediaModalProps> = ({
                     <span className="text-[11px] text-rose-300/70 block mt-1">
                       {mediaType === 'photo'
                         ? 'Select multiple photos at once (JPG, PNG, WebP)'
-                        : 'Select video clips up to 18 MB each (MP4, WebM, MOV)'}
+                        : isPostgresReady
+                          ? 'Select video clips up to 100 MB each (MP4, WebM, MOV)'
+                          : 'Select video clips up to 18 MB each (MP4, WebM, MOV)'}
                     </span>
                     <input
                       type="file"

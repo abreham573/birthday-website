@@ -11,10 +11,14 @@ import {
   Lock,
   Loader2,
   MailOpen,
+  Upload,
 } from 'lucide-react';
 import { LoveLetterData } from '../types';
 import { DEFAULT_LOVE_LETTER } from '../data/defaultLetter';
-import { getReadableFirestoreErrorMessage } from '../lib/memoriesService';
+import {
+  compressImageFileToDataUrl,
+  getReadableFirestoreErrorMessage,
+} from '../lib/memoriesService';
 
 interface LoveLetterPageProps {
   letterData: LoveLetterData;
@@ -46,7 +50,9 @@ export const LoveLetterPage: React.FC<LoveLetterPageProps> = ({
   const [saveError, setSaveError] = useState<string | null>(null);
   const [photoSaveStatus, setPhotoSaveStatus] = useState<string | null>(null);
   const [bottomPhotoFailed, setBottomPhotoFailed] = useState<boolean>(false);
+  const [isProcessingPhoto, setIsProcessingPhoto] = useState<boolean>(false);
   const openTimerRef = useRef<number | null>(null);
+  const bottomPhotoInputRef = useRef<HTMLInputElement | null>(null);
 
   const bottomPhotoUrl =
     letterData.bottomPhotoUrl || DEFAULT_LOVE_LETTER.bottomPhotoUrl || '';
@@ -113,6 +119,28 @@ export const LoveLetterPage: React.FC<LoveLetterPageProps> = ({
       );
     } finally {
       setIsSaving(false);
+    }
+  };
+
+  const handleBottomPhotoFileChange = async (
+    e: React.ChangeEvent<HTMLInputElement>
+  ) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      setSaveError('Please select an image file (JPG, PNG, WebP).');
+      return;
+    }
+    setSaveError(null);
+    setIsProcessingPhoto(true);
+    try {
+      const dataUrl = await compressImageFileToDataUrl(file);
+      setEditedLetter((prev) => ({ ...prev, bottomPhotoUrl: dataUrl }));
+    } catch {
+      setSaveError('Could not process this photo. Please try another image.');
+    } finally {
+      setIsProcessingPhoto(false);
     }
   };
 
@@ -499,8 +527,42 @@ export const LoveLetterPage: React.FC<LoveLetterPageProps> = ({
 
                   <div>
                     <label className="block text-xs font-semibold text-rose-900 uppercase tracking-wider mb-1">
-                      Bottom Photo Caption
+                      Bottom Photo &amp; Caption
                     </label>
+                    <input
+                      ref={bottomPhotoInputRef}
+                      type="file"
+                      accept="image/*"
+                      onChange={handleBottomPhotoFileChange}
+                      className="hidden"
+                    />
+                    <div className="flex flex-wrap items-center gap-3 mb-2">
+                      {(editedLetter.bottomPhotoUrl || DEFAULT_LOVE_LETTER.bottomPhotoUrl) && (
+                        <img
+                          src={
+                            editedLetter.bottomPhotoUrl ||
+                            DEFAULT_LOVE_LETTER.bottomPhotoUrl
+                          }
+                          alt="Letter bottom preview"
+                          className="w-14 h-14 rounded-lg object-cover border border-rose-300"
+                        />
+                      )}
+                      <button
+                        type="button"
+                        disabled={isProcessingPhoto || isSaving}
+                        onClick={() => bottomPhotoInputRef.current?.click()}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-rose-100 hover:bg-rose-200 border border-rose-300 text-xs font-semibold text-rose-900 cursor-pointer disabled:opacity-60"
+                      >
+                        {isProcessingPhoto ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <Upload className="w-3.5 h-3.5" />
+                        )}
+                        <span>
+                          {isProcessingPhoto ? 'Loading...' : 'Change Bottom Photo'}
+                        </span>
+                      </button>
+                    </div>
                     <input
                       type="text"
                       maxLength={300}

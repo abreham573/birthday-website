@@ -37,6 +37,20 @@ import {
   saveCachedSongConfig,
   setCacheTimestamp,
 } from './mediaCache';
+import {
+  deleteMemoryFromPostgres,
+  fetchDbStatus,
+  fetchGateFromPostgres,
+  fetchLetterFromPostgres,
+  fetchMemoriesFromPostgres,
+  fetchSongFromPostgres,
+  saveGateToPostgres,
+  saveLetterToPostgres,
+  saveMemoryUrlToPostgres,
+  saveSongToPostgres,
+  updateMemoryInPostgres,
+  uploadMemoryFileToPostgres,
+} from './postgresService';
 
 import { AccessGateConfig, LoveLetterData, MemoryItem, SongConfig } from '../types';
 import { DEFAULT_LOVE_LETTER } from '../data/defaultLetter';
@@ -324,6 +338,46 @@ export async function uploadMemoryFileToFirestore(params: {
 }): Promise<MemoryItem> {
   const { file, mediaType, title, caption, date, tag, authorId, onProgress } = params;
 
+  const safeTitle = title.trim().slice(0, 160) || 'Tsi';
+  const safeCaption = caption.trim().slice(0, 1000);
+  const safeDate = date.trim().slice(0, 80);
+  const safeTag = tag.trim().slice(0, 60);
+
+  const dbStatus = await fetchDbStatus();
+  if (dbStatus.configured && dbStatus.connected) {
+    if (file.size > 100 * 1024 * 1024) {
+      throw new Error(
+        `File "${file.name}" is larger than 100 MB. Please trim or compress it before uploading.`
+      );
+    }
+
+    onProgress?.(5);
+    let uploadFile = file;
+    if (mediaType === 'photo') {
+      const compressed = await compressImageFile(file);
+      const blob = dataUrlToBlob(compressed.dataUrl);
+      if (blob) {
+        uploadFile = new File([blob], file.name.replace(/\.[^.]+$/, '') + '.jpg', {
+          type: compressed.mimeType,
+        });
+      }
+      onProgress?.(35);
+    }
+
+    const saved = await uploadMemoryFileToPostgres({
+      file: uploadFile,
+      mediaType,
+      title: safeTitle,
+      caption: safeCaption,
+      date: safeDate,
+      tag: safeTag,
+      onProgress,
+    });
+    await prependMemoryToCache(saved);
+    onProgress?.(100);
+    return saved;
+  }
+
   if (mediaType === 'video' && file.size > MAX_VIDEO_BYTES) {
     throw new Error(
       `Video "${file.name}" is larger than 18 MB. Please trim or compress it slightly before uploading.`
@@ -349,10 +403,6 @@ export async function uploadMemoryFileToFirestore(params: {
     `mem_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
   );
   const aspectRatio: '4:3' | '16:9' = mediaType === 'video' ? '16:9' : '4:3';
-  const safeTitle = title.trim().slice(0, 160) || 'Tsi';
-  const safeCaption = caption.trim().slice(0, 1000);
-  const safeDate = date.trim().slice(0, 80);
-  const safeTag = tag.trim().slice(0, 60);
 
   const memoryRef = doc(db, 'memories', memoryId);
 
@@ -493,20 +543,33 @@ export async function saveMemoryUrlToFirestore(params: {
   authorId: string;
 }): Promise<MemoryItem> {
   const { url, mediaType, title, caption, date, tag, authorId } = params;
-  const memoryId = sanitizeId(
-    `mem_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
-  );
-  const aspectRatio: '4:3' | '16:9' = mediaType === 'video' ? '16:9' : '4:3';
   const safeTitle = title.trim().slice(0, 160) || 'Tsi';
   const safeCaption = caption.trim().slice(0, 1000);
   const safeDate = date.trim().slice(0, 80);
   const safeTag = tag.trim().slice(0, 60);
   const safeUrl = url.trim().slice(0, 900000);
-  if (
-    !/^(https?:\/\/|\/|data:(image|video)\/)/i.test(safeUrl)
-  ) {
+  if (!/^(https?:\/\/|\/|data:(image|video)\/)/i.test(safeUrl)) {
     throw new Error('Please enter a valid http:// or https:// media link.');
   }
+
+  const dbStatus = await fetchDbStatus();
+  if (dbStatus.configured && dbStatus.connected) {
+    const saved = await saveMemoryUrlToPostgres({
+      url: safeUrl,
+      mediaType,
+      title: safeTitle,
+      caption: safeCaption,
+      date: safeDate,
+      tag: safeTag,
+    });
+    await prependMemoryToCache(saved);
+    return saved;
+  }
+
+  const memoryId = sanitizeId(
+    `mem_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+  );
+  const aspectRatio: '4:3' | '16:9' = mediaType === 'video' ? '16:9' : '4:3';
 
   try {
     await setDoc(doc(db, 'memories', memoryId), {
@@ -659,6 +722,20 @@ export async function fetchMemoriesFromFirestore(options?: {
   const path = 'memories';
   const FIRST_PAGE_SIZE = 6;
   const NEXT_PAGE_SIZE = 10;
+
+  // Prefer PostgreSQL whenever configured & connected (0 Firestore reads!)
+  const dbStatus = await fetchDbStatus(options?.forceRefresh);
+  if (dbStatus.configured && dbStatus.connected) {
+    const pgMemories = await fetchMemoriesFromPostgres();
+    if (pgMemories.length > 0) {
+      options?.onPartialBatch?.(pgMemories);
+      void setCacheTimestamp('memories');
+      return pgMemories;
+    }
+    // PostgreSQL is ready & empty (before migration): keep showing local cache without hitting Firestore
+    return getCachedMemoriesFallback();
+  }
+
   if (
     isFirestoreQuotaLocked() ||
     (typeof navigator !== 'undefined' && navigator.onLine === false)
@@ -737,6 +814,18 @@ export async function getCachedMemoriesFallback(): Promise<MemoryItem[]> {
 
 export async function deleteMemoryFromFirestore(memoryId: string): Promise<void> {
   const path = `memories/${memoryId}`;
+  const dbStatus = await fetchDbStatus();
+  if (dbStatus.configured && dbStatus.connected) {
+    await deleteMemoryFromPostgres(memoryId);
+    revokeCachedObjectUrl(memoryId);
+    await deleteCachedMediaBlob(memoryId);
+    const cached = await getCachedMemoriesList();
+    if (cached) {
+      await saveCachedMemoriesList(cached.filter((item) => item.id !== memoryId));
+    }
+    return;
+  }
+
   try {
     const memoryRef = doc(db, 'memories', memoryId);
     const snap = await getDoc(memoryRef);
@@ -778,6 +867,24 @@ export async function updateMemoryMetadataInFirestore(params: {
   const safeDate = date.trim().slice(0, 80);
   const safeTag = tag.trim().slice(0, 60);
 
+  const dbStatus = await fetchDbStatus();
+  if (dbStatus.configured && dbStatus.connected) {
+    const updated = await updateMemoryInPostgres({
+      memoryId,
+      title: safeTitle,
+      caption: safeCaption,
+      date: safeDate,
+      tag: safeTag,
+    });
+    const cached = await getCachedMemoriesList();
+    if (cached && cached.length > 0) {
+      await saveCachedMemoriesList(
+        cached.map((item) => (item.id === memoryId ? { ...item, ...updated } : item))
+      );
+    }
+    return updated;
+  }
+
   try {
     await updateDoc(doc(db, 'memories', memoryId), {
       title: safeTitle,
@@ -814,6 +921,22 @@ export async function fetchLetterFromFirestore(options?: {
   forceRefresh?: boolean;
 }): Promise<LoveLetterData | null> {
   const path = 'letter/birthday';
+
+  const dbStatus = await fetchDbStatus(options?.forceRefresh);
+  if (dbStatus.configured && dbStatus.connected) {
+    const pgLetter = await fetchLetterFromPostgres();
+    if (pgLetter) {
+      return {
+        ...pgLetter,
+        bottomPhotoUrl:
+          pgLetter.bottomPhotoUrl?.trim() || DEFAULT_LOVE_LETTER.bottomPhotoUrl,
+        bottomPhotoCaption:
+          pgLetter.bottomPhotoCaption?.trim() || DEFAULT_LOVE_LETTER.bottomPhotoCaption,
+      };
+    }
+    return getCachedLetterFallback();
+  }
+
   if (
     isFirestoreQuotaLocked() ||
     (typeof navigator !== 'undefined' && navigator.onLine === false)
@@ -900,6 +1023,21 @@ export async function saveLetterToFirestore(
   const safeAnniversaryDate =
     (letter.anniversaryDate || 'On Your Special Birthday').trim().slice(0, 80) ||
     'On Your Special Birthday';
+
+  const dbStatus = await fetchDbStatus();
+  if (dbStatus.configured && dbStatus.connected) {
+    return saveLetterToPostgres({
+      recipient: safeRecipient,
+      notice: safeNotice,
+      salutation: safeSalutation,
+      paragraphs,
+      closing: safeClosing,
+      signature: safeSignature,
+      anniversaryDate: safeAnniversaryDate,
+      bottomPhotoUrl,
+      bottomPhotoCaption,
+    });
+  }
 
   try {
     const existing = await getDoc(letterRef);
@@ -1052,6 +1190,14 @@ export async function fetchGateConfigFromFirestore(options?: {
   forceRefresh?: boolean;
 }): Promise<AccessGateConfig | null> {
   const path = 'gate/config';
+
+  const dbStatus = await fetchDbStatus(options?.forceRefresh);
+  if (dbStatus.configured && dbStatus.connected) {
+    const pgGate = await fetchGateFromPostgres();
+    if (pgGate) return pgGate;
+    return getCachedGateConfigFallback();
+  }
+
   if (
     isFirestoreQuotaLocked() ||
     (typeof navigator !== 'undefined' && navigator.onLine === false)
@@ -1120,6 +1266,16 @@ export async function saveGateConfigToFirestore(params: {
     params.welcomeTitle.trim().slice(0, 160) || DEFAULT_GATE_CONFIG.welcomeTitle;
   const safeSubtitle = params.welcomeSubtitle.trim().slice(0, 400);
 
+  const dbStatus = await fetchDbStatus();
+  if (dbStatus.configured && dbStatus.connected) {
+    return saveGateToPostgres({
+      passwordHash,
+      hint: safeHint,
+      welcomeTitle: safeTitle,
+      welcomeSubtitle: safeSubtitle,
+    });
+  }
+
   try {
     const existing = await getDoc(gateRef);
     if (!existing.exists()) {
@@ -1184,6 +1340,14 @@ export async function fetchSongConfigFromFirestore(options?: {
   forceRefresh?: boolean;
 }): Promise<SongConfig | null> {
   const path = 'song/config';
+
+  const dbStatus = await fetchDbStatus(options?.forceRefresh);
+  if (dbStatus.configured && dbStatus.connected) {
+    const pgSong = await fetchSongFromPostgres();
+    if (pgSong) return pgSong;
+    return getCachedSongConfigFallback();
+  }
+
   if (
     isFirestoreQuotaLocked() ||
     (typeof navigator !== 'undefined' && navigator.onLine === false)
@@ -1267,6 +1431,20 @@ export async function saveSongConfigToFirestore(
     song.lyricsText.trim().slice(0, 4000) || DEFAULT_SONG_CONFIG.lyricsText;
   const safeMeaning = song.meaning.trim().slice(0, 2000);
   const safeCoverPhotoUrl = (song.coverPhotoUrl ?? '').trim().slice(0, 900000);
+
+  const dbStatus = await fetchDbStatus();
+  if (dbStatus.configured && dbStatus.connected) {
+    return saveSongToPostgres({
+      songTitle: safeSongTitle,
+      artistName: safeArtistName,
+      youtubeUrl: safeYoutubeUrl,
+      dedicationHeading: safeDedicationHeading,
+      dedicationBody: safeDedicationBody,
+      lyricsText: safeLyricsText,
+      meaning: safeMeaning,
+      coverPhotoUrl: safeCoverPhotoUrl,
+    });
+  }
 
   try {
     const existing = await getDoc(songRef);
